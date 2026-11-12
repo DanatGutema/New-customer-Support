@@ -185,10 +185,6 @@ export default function CaseFilters({ onFilter }) {
                         Pending
                     </option>
 
-                    <option value="AWAITING_CUSTOMER_RESPONSE">
-                        Awaiting Customer Response
-                    </option>
-
                     <option value="CLOSED">
                         Closed
                     </option>

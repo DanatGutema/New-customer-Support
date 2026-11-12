@@ -26,7 +26,6 @@ const STATUS_ORDER = [
     "Pending",
     "Escalated",
     "Resolved",
-    "Awaiting Customer",
     "Closed",
     "Cancelled",
 ];

@@ -158,7 +158,6 @@ export default function ReportsPage() {
         "In Progress",
         "Pending",
         "Escalated",
-        "Awaiting Customer",
         "Resolved",
         "Closed",
         "Cancelled",
@@ -187,14 +186,6 @@ export default function ReportsPage() {
 
         if (s === "ESCALATED") {
             return "Escalated";
-        }
-
-        if (
-            s === "WAITING_CUSTOMER_FEEDBACK" ||
-            s === "AWAITING_CUSTOMER" ||
-            s === "AWAITING_CUSTOMER_FEEDBACK"
-        ) {
-            return "Awaiting Customer";
         }
 
         if (s === "RESOLVED") {

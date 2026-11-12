@@ -439,14 +439,6 @@ function CaseRow({
   const isInProgress =
     caseItem.status === "IN_PROGRESS";
 
-  const statusLabel =
-    caseItem.status
-      ?.replace(/_/g, " ")
-      ?.toLowerCase()
-      ?.replace(/\b\w/g, (letter) =>
-        letter.toUpperCase()
-      ) || "Unknown";
-
   const priority = caseItem.priority || "NORMAL";
 
   const priorityStyles = {
@@ -571,10 +563,6 @@ function CaseRow({
           </span>
 
           <StatusBadge status={caseItem.status} />
-
-          <span className="hidden text-[9px] font-medium text-ink-400 xl:block">
-            {statusLabel}
-          </span>
 
         </div>
 

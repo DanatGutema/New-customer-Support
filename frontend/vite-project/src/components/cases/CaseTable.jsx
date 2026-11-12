@@ -54,16 +54,6 @@ const statusConfig = {
         tone: "warning",
     },
 
-    AWAITING_CUSTOMER_RESPONSE: {
-        label: "Awaiting Customer Response",
-        tone: "neutral",
-    },
-
-    WAITING_CUSTOMER_FEEDBACK: {
-        label: "Awaiting Customer Response",
-        tone: "neutral",
-    },
-
     CLOSED: {
         label: "Closed",
         tone: "success",

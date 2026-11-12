@@ -575,20 +575,6 @@ export default function CaseTrackingPage() {
                     const itemStatus =
                         normalize(item.status);
 
-                    if (
-                        status ===
-                        "AWAITING_CUSTOMER_RESPONSE"
-                    ) {
-
-                        return [
-                            "AWAITING_CUSTOMER_RESPONSE",
-                            "WAITING_CUSTOMER_FEEDBACK",
-                            "AWAITING_CUSTOMER",
-                            "AWAITING_CUSTOMER_FEEDBACK",
-                        ].includes(itemStatus);
-
-                    }
-
                     if (status === "CANCELLED") {
 
                         return (

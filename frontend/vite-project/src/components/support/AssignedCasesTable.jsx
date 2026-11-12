@@ -43,16 +43,6 @@ const statusConfig = {
     className: "border-warning-200 bg-warning-50 text-warning-700",
   },
 
-  AWAITING_CUSTOMER_RESPONSE: {
-    label: "Awaiting Customer",
-    className: "border-ink-300 bg-ink-50 text-ink-600",
-  },
-
-  WAITING_CUSTOMER_FEEDBACK: {
-    label: "Awaiting Customer",
-    className: "border-ink-300 bg-ink-50 text-ink-600",
-  },
-
   CLOSED: {
     label: "Closed",
     className: "border-emerald-200 bg-emerald-50 text-emerald-700",

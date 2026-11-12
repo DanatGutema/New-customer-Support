@@ -43,30 +43,6 @@ const STATUS_CONFIG = {
             "bg-[#fdf0f0] text-[#c65b5b] border-[#fadcdc]",
         dot: "bg-[#c65b5b]",
     },
-    WAITING_CUSTOMER_FEEDBACK: {
-        label: "Awaiting Customer",
-        className:
-            "bg-[#fbf2eb] text-[#b87842] border-[#f6e4d6]",
-        dot: "bg-[#b87842]",
-    },
-    AWAITING_CUSTOMER: {
-        label: "Awaiting Customer",
-        className:
-            "bg-[#fbf2eb] text-[#b87842] border-[#f6e4d6]",
-        dot: "bg-[#b87842]",
-    },
-    AWAITING_CUSTOMER_RESPONSE: {
-        label: "Awaiting Customer",
-        className:
-            "bg-[#fbf2eb] text-[#b87842] border-[#f6e4d6]",
-        dot: "bg-[#b87842]",
-    },
-    AWAITING_CUSTOMER_FEEDBACK: {
-        label: "Awaiting Customer",
-        className:
-            "bg-[#fbf2eb] text-[#b87842] border-[#f6e4d6]",
-        dot: "bg-[#b87842]",
-    },
     RESOLVED: {
         label: "Resolved",
         className:

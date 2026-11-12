@@ -3,7 +3,6 @@ import {
     Activity,
     AlertTriangle,
     Clock3,
-    MessageCircle,
     CheckCircle2,
     CircleCheck,
 } from "lucide-react";
@@ -52,14 +51,6 @@ const statConfig = [
         description: "Waiting to be processed",
         icon: Clock3,
         iconStyle: "bg-orange-50 text-orange-600 border-orange-100",
-    },
-
-    {
-        key: "AWAITING_CUSTOMER_RESPONSE",
-        label: "Awaiting Customer",
-        description: "Waiting for customer",
-        icon: MessageCircle,
-        iconStyle: "bg-cyan-50 text-cyan-600 border-cyan-100",
     },
 
     {
@@ -329,15 +320,6 @@ export default function CaseStats({
     );
 
 
-    // ------------------------------------------------------------
-    // SUPPORT BOTH POSSIBLE API STATUS NAMES
-    // ------------------------------------------------------------
-
-    const awaitingCustomer =
-        (counts.AWAITING_CUSTOMER_RESPONSE || 0) +
-        (counts.WAITING_CUSTOMER_FEEDBACK || 0);
-
-
     const stats = {
 
         TOTAL: total,
@@ -353,9 +335,6 @@ export default function CaseStats({
 
         PENDING:
             counts.PENDING || 0,
-
-        AWAITING_CUSTOMER_RESPONSE:
-            awaitingCustomer,
 
         CLOSED:
             counts.CLOSED || 0,

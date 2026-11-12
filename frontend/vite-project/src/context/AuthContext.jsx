@@ -19,7 +19,7 @@ export function AuthProvider({ children }) {
         const handleForcedLogout = () => setUser(null);
         window.addEventListener("auth:logout", handleForcedLogout);
 
-        // Silently refresh permissions every 2 minutes so permission changes
+        // Silently refresh permissions every 30 seconds so permission changes
         // granted by an admin take effect without requiring a manual logout.
         const permissionRefreshInterval = setInterval(async () => {
             try {
@@ -28,7 +28,7 @@ export function AuthProvider({ children }) {
             } catch (_) {
                 // If refresh fails, the interceptor will handle forced logout
             }
-        }, 2 * 60 * 1000);
+        }, 30 * 1000);
 
         return () => {
             window.removeEventListener("auth:logout", handleForcedLogout);

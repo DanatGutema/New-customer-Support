@@ -48,15 +48,6 @@ export default function RecentCasesTable({
                     dot: "bg-red-500",
                 };
 
-            case "WAITING_CUSTOMER_FEEDBACK":
-            case "AWAITING_CUSTOMER":
-            case "AWAITING_CUSTOMER_FEEDBACK":
-                return {
-                    label: "Awaiting Customer",
-                    className: "bg-indigo-50 text-indigo-700 border-indigo-100",
-                    dot: "bg-indigo-500",
-                };
-
             case "RESOLVED":
                 return {
                     label: "Resolved",
