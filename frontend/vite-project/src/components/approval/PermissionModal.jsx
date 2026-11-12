@@ -204,10 +204,13 @@ export default function PermissionModal({
                 </div>
 
                 <div className="flex items-center justify-between gap-3 border-t border-ink-100 px-6 py-4">
-                    <p className="text-xs text-ink-500">
-                        <span className="font-semibold text-ink-700">{checkedCount}</span> extra{" "}
-                        {checkedCount === 1 ? "permission" : "permissions"} selected
-                    </p>
+                <p className="text-xs text-ink-500">
+                    <span className="font-semibold text-ink-700">{checkedCount}</span> extra{" "}
+                    {checkedCount === 1 ? "permission" : "permissions"} selected
+                    {checkedCount === 0 && (
+                        <span className="ml-1 text-amber-600">(saving will clear all extra permissions)</span>
+                    )}
+                </p>
                     <div className="flex gap-3">
                         <Button variant="outline" size="sm" onClick={onClose}>
                             Cancel
@@ -216,7 +219,6 @@ export default function PermissionModal({
                             variant="primary"
                             size="sm"
                             onClick={() => onSave(user.id, selected)}
-                            disabled={selected.length === 0}
                         >
                             Save Permissions
                         </Button>

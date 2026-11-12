@@ -15,6 +15,8 @@ import {
     getCase,
 } from "../../api/caseApi";
 
+import { createCase } from "../../api/customerCaseApi";
+import { getCategories, getSubcategories, getServiceTypes } from "../../api/productServiceApi";
 
 import CaseStats from "../../components/cases/CaseStats";
 import CaseFilters from "../../components/cases/CaseFilters";
@@ -35,9 +37,216 @@ import CaseSorting from "../../components/cases/CaseSorting";
 import {
     RefreshCw,
     FileText,
+    ClipboardList,
 } from "lucide-react";
 
 import AdminPageHero from "../../components/admin/AdminPageHero";
+
+
+// ============================================================
+// ADMIN CREATE CASE MODAL
+// ============================================================
+
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
+
+function AdminCreateCaseModal({ open, onClose, onSubmitted }) {
+    const [categories, setCategories] = useState([]);
+    const [subcategories, setSubcategories] = useState([]);
+    const [services, setServices] = useState([]);
+    const [filteredSubcategories, setFilteredSubcategories] = useState([]);
+    const [files, setFiles] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [form, setForm] = useState({
+        customerEmail: "",
+        reason: "",
+        branchName: "",
+        subject: "",
+        description: "",
+        productCategoryId: "",
+        productSubcategoryId: "",
+        serviceTypeId: "",
+    });
+
+    useEffect(() => {
+        if (!open) return;
+        const loadData = async () => {
+            try {
+                const [catRes, subRes, svcRes] = await Promise.all([
+                    getCategories(true),   // activeOnly
+                    getSubcategories(true),
+                    getServiceTypes(),
+                ]);
+                const normalize = (res, keys) => {
+                    for (const key of ["data", ...keys]) {
+                        if (Array.isArray(res?.data?.[key])) return res.data[key];
+                    }
+                    return Array.isArray(res?.data) ? res.data : [];
+                };
+                setCategories(normalize(catRes, ["categories"]));
+                setSubcategories(normalize(subRes, ["subcategories"]));
+                setServices(normalize(svcRes, ["serviceTypes"]));
+            } catch (err) {
+                console.error("Admin create case — failed to load lookups:", err);
+            }
+        };
+        loadData();
+    }, [open]);
+
+    const handleCategoryChange = (e) => {
+        const id = e.target.value;
+        setForm((f) => ({ ...f, productCategoryId: id, productSubcategoryId: "" }));
+        setFilteredSubcategories(
+            subcategories.filter((s) => {
+                const cid = s.productCategoryId ?? s.categoryId ?? s.product_category_id;
+                return String(cid) === String(id);
+            })
+        );
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const { customerEmail, reason, branchName, subject, description, productCategoryId, productSubcategoryId, serviceTypeId } = form;
+        if (!customerEmail || !reason || !branchName || !subject || !description || !productCategoryId || !productSubcategoryId || !serviceTypeId) {
+            alert("Please complete all required fields before submitting.");
+            return;
+        }
+        if (reason.trim().length < 5) {
+            alert("Reason must be at least 5 characters.");
+            return;
+        }
+        if (files.length > MAX_ATTACHMENTS) {
+            alert(`You can attach up to ${MAX_ATTACHMENTS} files.`);
+            return;
+        }
+        try {
+            setLoading(true);
+            const data = new FormData();
+            data.append("customerEmail", customerEmail.trim());
+            data.append("reason", reason.trim());
+            data.append("branchName", branchName);
+            data.append("subject", subject);
+            data.append("description", description);
+            data.append("productCategoryId", productCategoryId);
+            data.append("productSubcategoryId", productSubcategoryId);
+            data.append("serviceTypeId", serviceTypeId);
+            files.forEach((f) => data.append("attachments", f));
+
+            await createCase(data, true);
+
+            alert("Case logged successfully on behalf of the customer.");
+            setForm({ customerEmail: "", reason: "", branchName: "", subject: "", description: "", productCategoryId: "", productSubcategoryId: "", serviceTypeId: "" });
+            setFiles([]);
+            setFilteredSubcategories([]);
+            onSubmitted?.();
+            onClose?.();
+        } catch (err) {
+            console.error("Admin case creation failed:", err?.response?.data || err);
+            alert(err?.response?.data?.message || "Failed to create case.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (!open) return null;
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+            <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+                <div className="mb-6 flex items-center justify-between gap-3">
+                    <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-blue-600">Admin Action</p>
+                        <h2 className="text-2xl font-bold text-slate-900">Open Case for Customer</h2>
+                    </div>
+                    <button type="button" onClick={onClose} className="rounded-md border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="space-y-5">
+                    <div className="grid gap-5 md:grid-cols-2">
+                        <div className="md:col-span-2">
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Customer Email <span className="text-red-500">*</span></label>
+                            <input type="email" className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.customerEmail} onChange={(e) => setForm((f) => ({ ...f, customerEmail: e.target.value }))} placeholder="customer@example.com" />
+                        </div>
+
+                        <div className="md:col-span-2">
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Reason for Opening Case <span className="text-red-500">*</span></label>
+                            <textarea rows="2" className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Why is this case being opened on behalf of the customer? (min 5 chars)" />
+                        </div>
+
+                        <div>
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Branch Name <span className="text-red-500">*</span></label>
+                            <input className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.branchName} onChange={(e) => setForm((f) => ({ ...f, branchName: e.target.value }))} />
+                        </div>
+
+                        <div>
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Case Subject <span className="text-red-500">*</span></label>
+                            <input className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.subject} onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))} />
+                        </div>
+
+                        <div>
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Category <span className="text-red-500">*</span></label>
+                            <select className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.productCategoryId} onChange={handleCategoryChange}>
+                                <option value="">Select Category</option>
+                                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Subcategory <span className="text-red-500">*</span></label>
+                            <select className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.productSubcategoryId} onChange={(e) => setForm((f) => ({ ...f, productSubcategoryId: e.target.value }))} disabled={!filteredSubcategories.length}>
+                                <option value="">Select Subcategory</option>
+                                {filteredSubcategories.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="md:col-span-2">
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Service Type <span className="text-red-500">*</span></label>
+                            <select className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.serviceTypeId} onChange={(e) => setForm((f) => ({ ...f, serviceTypeId: e.target.value }))}>
+                                <option value="">Select Service</option>
+                                {services.map((s) => <option key={s.id} value={s.id}>{s.name || s.serviceName}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="md:col-span-2">
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Problem Description <span className="text-red-500">*</span></label>
+                            <textarea rows="5" className="w-full rounded-xl border border-slate-200 p-3 outline-none focus:border-blue-400" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Describe the issue in detail..." />
+                        </div>
+
+                        <div className="md:col-span-2">
+                            <label className="mb-1 block text-sm font-medium text-slate-700">Attachments (max {MAX_ATTACHMENTS}, 50MB each)</label>
+                            <input type="file" multiple className="w-full rounded-xl border border-slate-200 p-3"
+                                onChange={(e) => {
+                                    const selected = Array.from(e.target.files || []);
+                                    const merged = [...files, ...selected].slice(0, MAX_ATTACHMENTS);
+                                    const oversized = merged.find((f) => f.size > MAX_ATTACHMENT_SIZE);
+                                    if (oversized) { alert("Each file must be 50 MB or smaller."); return; }
+                                    setFiles(merged);
+                                }}
+                            />
+                            {files.length > 0 && (
+                                <ul className="mt-2 space-y-1">
+                                    {files.map((f, i) => (
+                                        <li key={i} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                                            <span className="truncate">{f.name}</span>
+                                            <button type="button" onClick={() => setFiles((prev) => prev.filter((_, idx) => idx !== i))} className="ml-3 rounded border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:text-red-500">Remove</button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="flex justify-end gap-3 pt-2">
+                        <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-5 py-2.5 font-medium text-slate-700 hover:bg-slate-100">Cancel</button>
+                        <button type="submit" disabled={loading} className="rounded-xl bg-[#17345c] px-5 py-2.5 font-semibold text-white hover:bg-[#102949] disabled:opacity-60">
+                            {loading ? "Submitting..." : "Submit Case"}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+}
 
 
 // ============================================================
@@ -91,6 +300,8 @@ export default function CaseTrackingPage() {
     const [showEscalate, setShowEscalate] = useState(false);
 
     const [showClose, setShowClose] = useState(false);
+
+    const [showCreateCase, setShowCreateCase] = useState(false);
 
 
     // ============================================================
@@ -640,7 +851,35 @@ export default function CaseTrackingPage() {
 
 
 
-                        {/* RIGHT — REFRESH */}
+                        {/* RIGHT — REFRESH + OPEN CASE */}
+
+                        <div className="flex items-center gap-2 self-start lg:self-center">
+
+                        <button
+                            type="button"
+                            onClick={() => setShowCreateCase(true)}
+                            className="
+                                inline-flex
+                                h-9
+                                shrink-0
+                                items-center
+                                justify-center
+                                gap-2
+                                rounded-lg
+                                bg-emerald-600
+                                px-3.5
+                                text-xs
+                                font-semibold
+                                text-white
+                                shadow-sm
+                                transition-all
+                                duration-200
+                                hover:bg-emerald-700
+                            "
+                        >
+                            <ClipboardList size={14} strokeWidth={2} />
+                            Open Case
+                        </button>
 
                         <button
                             type="button"
@@ -653,7 +892,6 @@ export default function CaseTrackingPage() {
                                 items-center
                                 justify-center
                                 gap-2
-                                self-start
                                 rounded-lg
                                 bg-[#17345c]
                                 px-3.5
@@ -666,7 +904,6 @@ export default function CaseTrackingPage() {
                                 hover:bg-[#102949]
                                 disabled:cursor-not-allowed
                                 disabled:opacity-60
-                                lg:self-center
                             "
                         >
 
@@ -683,6 +920,8 @@ export default function CaseTrackingPage() {
                             Refresh
 
                         </button>
+
+                        </div>
 
                     </div>
 
@@ -1217,6 +1456,20 @@ export default function CaseTrackingPage() {
                 />
 
             )}
+
+            {/* =====================================================
+                ADMIN CREATE CASE
+            ===================================================== */}
+
+            <AdminCreateCaseModal
+                open={showCreateCase}
+                onClose={() => setShowCreateCase(false)}
+                onSubmitted={() => {
+                    setShowCreateCase(false);
+                    loadCases();
+                    notifyCaseDashboardRefresh();
+                }}
+            />
 
         </div>
 

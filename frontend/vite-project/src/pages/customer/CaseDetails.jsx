@@ -18,11 +18,11 @@ import { Ticket } from "lucide-react";
 
 import CustomerPageHero from "../../components/customer/CustomerPageHero";
 
-// import PriorityBadge from "../../components/customer/PriorityBadge"; // [COMMENTED OUT] priority hidden from customer
-
 import CaseTimeline from "../../components/customer/CaseTimeline";
 
 import FeedbackModal from "../../components/customer/FeedbackModal";
+
+import CaseThread from "../../components/cases/CaseThread";
 
 const API_BASE_URL = (import.meta.env.VITE_API_ROOT || "http://localhost:5000").replace(/\/$/, "");
 
@@ -371,6 +371,12 @@ export default function CaseDetails() {
             </div>
 
             </div>
+
+            <CaseThread
+                caseId={data.id}
+                initialMessages={data.messages || []}
+                readOnly={data.status === "CLOSED" || data.status === "CANCELLED"}
+            />
 
             <CaseTimeline
 

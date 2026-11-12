@@ -171,10 +171,31 @@ export const deactivateOrganization = async (id: string) => {
   const existing = await prisma.organization.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError("Organization target missing.");
 
-  await prisma.customer.updateMany({
-    where: { organizationId: id },
-    data: { status: "DEACTIVATED" },
+  // Find all customers in this org to revoke their sessions
+  const orgCustomers = await prisma.customer.findMany({
+    where: { organizationId: id, status: "ACTIVE" },
+    select: { id: true },
   });
+
+  // Deactivate all associated customers and revoke their sessions
+  if (orgCustomers.length > 0) {
+    const customerIds = orgCustomers.map((c) => c.id);
+
+    await prisma.customer.updateMany({
+      where: { organizationId: id },
+      data: { status: "DEACTIVATED" },
+    });
+
+    // Revoke all active refresh tokens for these customers
+    await prisma.refreshToken.updateMany({
+      where: {
+        userId: { in: customerIds },
+        userType: "CUSTOMER",
+        revokedAt: null,
+      },
+      data: { revokedAt: new Date() },
+    });
+  }
 
   return prisma.organization.update({
     where: { id },

@@ -20,6 +20,9 @@ import {
 import SupportHeader from "../../components/support/SupportHeader";
 import StatusTimeline from "../../components/support/StatusTimeline";
 import ResolutionModal from "../../components/support/ResolutionModal";
+// import SlaCountdown from "../../components/cases/SlaCountdown"; // SLA DISABLED
+import CaseThread from "../../components/cases/CaseThread";
+import EmailThread from "../../components/cases/EmailThread";
 
 import { supportApi } from "../../api/supportApi";
 import caseApi from "../../api/caseApi";
@@ -27,8 +30,11 @@ import caseApi from "../../api/caseApi";
 import PutOnPendingModal from "../../components/cases/PutOnPendingModal";
 import EscalateModal from "../../components/cases/EscalateModal";
 import CancelCaseModal from "../../components/cases/CancelCaseModal";
+import ReassignStaffModal from "../../components/cases/ReassignStaffModal";
+import CaseTimeTracker from "../../components/support/CaseTimeTracker";
 
 import { useAuth } from "../../context/useAuth";
+import { usePermission } from "../../hooks/usePermission";
 
 const API_BASE_URL = (
   import.meta.env.VITE_API_ROOT || "http://localhost:5000"
@@ -169,14 +175,17 @@ const getStatusConfig = (status) => {
 const resolveUserRole = (account) => {
   if (!account) return "customer";
 
-  if (account.role) {
-    return String(account.role).toLowerCase();
-  }
-
   if (account.isSAdmin) return "admin";
   if (account.isManager) return "manager";
   if (account.isPSsupport) return "agent";
   if (account.isDirector) return "director";
+
+  if (account.role) {
+    const r = String(account.role).toLowerCase();
+    if (r === "ps_support" || r === "support") return "agent";
+    if (r === "system_admin") return "admin";
+    return r;
+  }
 
   return String(account.partyType || "customer").toLowerCase();
 };
@@ -195,6 +204,7 @@ export default function CaseDetail() {
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [showEscalateModal, setShowEscalateModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showReassignModal, setShowReassignModal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   /* ==========================================================
@@ -309,12 +319,23 @@ export default function CaseDetail() {
 
   const isSupportStaff = [
     "agent",
+    "ps_support",
+    "support",
     "manager",
     "admin",
+    "system_admin",
     "director",
-  ].includes(userRole);
+  ].includes(userRole) || Boolean(user?.isPSsupport || user?.isManager || user?.isSAdmin || user?.isDirector || user?.partyType === "STAFF");
 
   const isAdmin = userRole === "admin";
+
+  const currentUserId = user?.id || user?.userId;
+  const isAssignedAgent = Boolean(
+    currentUserId && data && (data.assignedSupportId === currentUserId || data.assignedSupport?.id === currentUserId)
+  );
+
+  // True when the user has CASE_ASSIGN in their permission list (granted by admin)
+  const canAssign = usePermission("CASE_ASSIGN");
 
   const pendingReason =
     data?.pendingReason ||
@@ -352,6 +373,16 @@ export default function CaseDetail() {
       onClick: startResolve,
       type: "primary",
     });
+
+    // Show Reassign when user has CASE_ASSIGN permission
+    if (canAssign) {
+      actions.push({
+        label: "Reassign",
+        icon: ArrowUpRight,
+        onClick: () => setShowReassignModal(true),
+        type: "secondary",
+      });
+    }
   }
 
   if (
@@ -381,8 +412,8 @@ export default function CaseDetail() {
 
           alert(
             error?.response?.data?.message ||
-              error?.message ||
-              "Failed to resume case"
+            error?.message ||
+            "Failed to resume case"
           );
         }
       },
@@ -484,9 +515,8 @@ export default function CaseDetail() {
                 className="flex h-8 items-center gap-2 border border-white/10 bg-white/[0.05] px-3 text-[9px] font-semibold text-white/50 transition hover:bg-white/[0.1] hover:text-white"
               >
                 <RefreshCw
-                  className={`h-3 w-3 ${
-                    refreshing ? "animate-spin" : ""
-                  }`}
+                  className={`h-3 w-3 ${refreshing ? "animate-spin" : ""
+                    }`}
                 />
 
                 Refresh
@@ -554,7 +584,7 @@ export default function CaseDetail() {
 
         {/* ACTION BAR */}
 
-        {(hasActions || isAdmin) && (
+        {(hasActions || isAdmin || isSupportStaff) && (
           <section className="border border-ink-300 bg-white shadow-[0_8px_30px_rgba(16,32,55,0.04)]">
             <div className="flex flex-col gap-4 px-5 py-4 sm:px-6">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -613,6 +643,25 @@ export default function CaseDetail() {
                   )}
                 </div>
               </div>
+
+              {/* Time Tracking Section */}
+              {isSupportStaff && data?.id && (
+                <div className="flex flex-col gap-3 border-t border-ink-100 pt-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-[navy-500]">
+                      Time Tracking
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-ink-400">
+                      Track active investigation and work duration for this ticket.
+                    </p>
+                  </div>
+                  <CaseTimeTracker
+                    caseId={data.id}
+                    isAssignedAgent={isAssignedAgent}
+                    caseStatus={currentStatus}
+                  />
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -661,6 +710,22 @@ export default function CaseDetail() {
         {/* MAIN CONTENT */}
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+
+          {/* CONVERSATION THREAD */}
+
+          <div className="lg:col-span-2">
+            <CaseThread
+              caseId={data.id}
+              initialMessages={data.messages || []}
+              readOnly={currentStatus === "CLOSED" || currentStatus === "CANCELLED"}
+            />
+          </div>
+
+          {/* EMAIL THREAD */}
+
+          <div className="lg:col-span-2">
+            <EmailThread caseId={data.id} />
+          </div>
 
           {/* TIMELINE */}
 
@@ -737,6 +802,15 @@ export default function CaseDetail() {
                   label="Status"
                   value={statusConfig.label}
                 />
+
+                {data.sla && (
+                  <div className="px-5 py-3 border-b border-ink-100">
+                    <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.15em] text-ink-400">
+                      SLA
+                    </p>
+                    <SlaCountdown sla={data.sla} />
+                  </div>
+                )}
 
                 {data.createdAt && (
                   <InfoRow
@@ -891,6 +965,23 @@ export default function CaseDetail() {
           api={caseApi}
         />
       )}
+
+      {showReassignModal && (
+        <ReassignStaffModal
+          caseData={data}
+          close={() => setShowReassignModal(false)}
+          refresh={async () => {
+            try {
+              const response = await caseApi.getCase(id);
+              setData(response?.data?.data || data);
+              setShowReassignModal(false);
+              window.dispatchEvent(new CustomEvent("cases:updated"));
+            } catch (error) {
+              console.error(error);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -987,9 +1078,8 @@ function InfoRow({
       </span>
 
       <span
-        className={`max-w-[170px] text-right text-[10px] font-semibold text-ink-600 ${
-          mono ? "font-mono" : ""
-        }`}
+        className={`max-w-[170px] text-right text-[10px] font-semibold text-ink-600 ${mono ? "font-mono" : ""
+          }`}
       >
         {value || "—"}
       </span>

@@ -1,4 +1,9 @@
+import { useMemo } from "react";
 import StatusBadge from "../../components/customer/StatusBadge";
+
+/* ------------------------------------------------------------------ */
+/* Constants                                                           */
+/* ------------------------------------------------------------------ */
 
 const STATUS_LABELS = {
   OPEN: "Open",
@@ -10,42 +15,56 @@ const STATUS_LABELS = {
   CANCELLED: "Cancelled",
 };
 
-/* [COMMENTED OUT] priority hidden from customer
-const PRIORITY_LABELS = {
-  LOW: "Low",
-  MEDIUM: "Medium",
-  HIGH: "High",
-  URGENT: "Urgent",
-};
-*/
-
-const normalizeText = (value) => {
-  if (value === null || value === undefined || value === "") return "";
-  return String(value).replace(/_/g, " ").replace(/\s+/g, " ").trim();
+// Full class strings so Tailwind can see them.
+const DOT_STYLES = {
+  OPEN: { bg: "bg-blue-500", ring: "ring-blue-100" },
+  IN_PROGRESS: { bg: "bg-emerald-500", ring: "ring-emerald-100" },
+  PENDING: { bg: "bg-orange-500", ring: "ring-orange-100" },
+  ESCALATED: { bg: "bg-red-500", ring: "ring-red-100" },
+  RESOLVED: { bg: "bg-teal-500", ring: "ring-teal-100" },
+  CLOSED: { bg: "bg-slate-500", ring: "ring-slate-200" },
+  CANCELLED: { bg: "bg-red-400", ring: "ring-red-100" },
+  DEFAULT: { bg: "bg-slate-400", ring: "ring-slate-200" },
 };
 
-const formatStatus = (value) => {
-  const normalized = normalizeText(value);
-  if (!normalized) return "Unknown";
-  const key = normalized.toUpperCase().replace(/\s+/g, "_");
-  return STATUS_LABELS[key] || normalized.replace(/\b\w/g, (char) => char.toUpperCase());
-};
+const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
 
-/* [COMMENTED OUT] priority hidden from customer
-const formatPriority = (value) => {
-  const normalized = normalizeText(value);
-  if (!normalized) return "Unknown";
-  const key = normalized.toUpperCase();
-  return PRIORITY_LABELS[key] || normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+/* ------------------------------------------------------------------ */
+/* Small helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+const formatDateTime = (date) => (date ? dateTimeFormat.format(date) : "");
+
+const text = (value) => (typeof value === "string" ? value.trim() : "");
+
+// "in progress" / "IN_PROGRESS" / "In Progress" -> "IN_PROGRESS"
+const toKey = (value) =>
+  String(value ?? "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase()
+    .replace(/ /g, "_");
+
+const formatStatus = (key) => {
+  if (!key) return "";
+  return (
+    STATUS_LABELS[key] ||
+    key
+      .replace(/_/g, " ")
+      .toLowerCase()
+      .replace(/\b\w/g, (char) => char.toUpperCase())
+  );
 };
-*/
 
 const getDisplayName = (actor) => {
   if (!actor) return "System";
 
   if (typeof actor === "string") {
-    const text = actor.trim();
-    return text || "System";
+    return actor.trim() || "System";
   }
 
   if (typeof actor === "object") {
@@ -59,296 +78,302 @@ const getDisplayName = (actor) => {
 };
 
 const getTimelineDate = (item) => {
-  const rawDate = item?.changedAt || item?.createdAt || item?.updatedAt || item?.submittedAt || item?.timestamp;
+  const rawDate =
+    item?.changedAt ||
+    item?.createdAt ||
+    item?.updatedAt ||
+    item?.submittedAt ||
+    item?.timestamp;
   if (!rawDate) return null;
 
   const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) return null;
-  return date;
+  return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const getStatusEventText = (fromStatus, toStatus) => {
-  const from = formatStatus(fromStatus);
-  const to = formatStatus(toStatus);
+// Only use the current assignee's name when the ids match, so older
+// assignment rows never show the wrong person.
+const resolveAssignedName = (event, caseDetails) => {
+  if (event.newAgentName) return event.newAgentName;
 
-  const lookup = {
-    OPEN: "Case created",
-    IN_PROGRESS: "Case in progress",
-    PENDING: "Awaiting customer or internal action",
-    ESCALATED: "Escalated to support lead",
-    RESOLVED: "Resolution prepared",
-    CLOSED: "Case completed and closed",
-    CANCELLED: "Case cancelled",
-  };
-
-  const specific = lookup[toStatus?.toUpperCase().replace(/\s+/g, "_") || ""];
-  if (specific) return specific;
-
-  if (from && to && from !== to) return `Case moved from ${from} to ${to}`;
-  if (to) return `Case updated to ${to}`;
-  return "Case updated";
+  const assigned = caseDetails?.assignedSupport;
+  if (assigned && event.newAgentId && assigned.id === event.newAgentId) {
+    return `${assigned.firstName || ""} ${assigned.lastName || ""}`.trim() || null;
+  }
+  return null;
 };
 
-const isInitialOpenEvent = (fromStatus, toStatus) => {
-  const fromKey = normalizeText(fromStatus).toUpperCase();
-  const toKey = normalizeText(toStatus).toUpperCase();
+/* ------------------------------------------------------------------ */
+/* One place that reads a raw history row                              */
+/* ------------------------------------------------------------------ */
 
-  return Boolean(toKey === "OPEN" && (!fromKey || fromKey === "OPEN"));
-};
-
-const hasMeaningfulEvent = (item) => {
-const fromStatus = normalizeText(item?.fromStatus ?? item?.oldStatus ?? item?.previousStatus);
-  const toStatus = normalizeText(item?.toStatus ?? item?.newStatus ?? item?.status);
-  /* [COMMENTED OUT] priority hidden from customer
-  const oldPriority = normalizeText(item?.oldPriority ?? item?.previousPriority);
-  const newPriority = normalizeText(item?.newPriority ?? item?.currentPriority);
-  */
+const normalizeEvent = (item) => {
+  const from = toKey(item?.fromStatus ?? item?.oldStatus ?? item?.previousStatus);
+  const to = toKey(item?.toStatus ?? item?.newStatus ?? item?.status);
   const oldAgentId = item?.oldAgentId ?? item?.previousAgentId ?? null;
-  const newAgentId = item?.newAgentId ?? item?.assignedAgentId ?? item?.agentId ?? null;
+  const newAgentId =
+    item?.newAgentId ?? item?.assignedAgentId ?? item?.agentId ?? null;
+  const note = text(item?.note);
 
-  return Boolean(
-    isInitialOpenEvent(fromStatus, toStatus) ||
-      (fromStatus && toStatus && fromStatus !== toStatus) ||
-      /* [COMMENTED OUT] priority hidden from customer
-      (oldPriority && newPriority && oldPriority !== newPriority) ||
-      */
-      (oldAgentId && newAgentId && oldAgentId !== newAgentId) ||
-      (item?.note && item.note.trim())
-  );
+  return {
+    id: item?.id ?? null,
+    from,
+    to,
+    oldAgentId,
+    newAgentId,
+    newAgentName: text(item?.newAgentName),
+    note,
+    reason: text(item?.reason) || note,
+    resolution: text(item?.resolutionSnapshot),
+    actorName: getDisplayName(item?.changedBy ?? item?.actor ?? null),
+    date: getTimelineDate(item),
+    isCreation: to === "OPEN" && (!from || from === "OPEN"),
+    statusChanged: Boolean(from && to && from !== to),
+    assignmentChanged: Boolean(newAgentId && newAgentId !== oldAgentId),
+  };
 };
 
-export default function CaseTimeline({ history = [], caseDetails = null }) {
-  const formatDateStr = (date) => {
-    if (!date) return "";
-    const d = new Date(date);
-    const day = String(d.getDate()).padStart(2, "0");
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    const year = String(d.getFullYear()).slice(-2);
-    return `${day}/${month}/${year}`;
-  };
+const buildTimeline = (history) => {
+  if (!Array.isArray(history)) return [];
 
-  const formatTimeStr = (date) => {
-    if (!date) return "";
-    const d = new Date(date);
-    const hours = d.getHours();
-    const minutes = String(d.getMinutes()).padStart(2, "0");
-    const ampm = hours >= 12 ? "PM" : "AM";
-    const hour12 = hours % 12 === 0 ? 12 : hours % 12;
-    return `${hour12}:${minutes} ${ampm}`;
-  };
+  const sorted = history
+    .map(normalizeEvent)
+    .sort((a, b) => {
+      if (!a.date && !b.date) return 0;
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+      return a.date.getTime() - b.date.getTime();
+    })
+    .filter(
+      (event) =>
+        event.isCreation ||
+        event.statusChanged ||
+        event.assignmentChanged ||
+        event.note
+    );
 
-  const findAssignedName = (item) => {
-    // prefer snapshot name from history row when available
-    if (item?.newAgentName && String(item.newAgentName).trim()) return String(item.newAgentName).trim();
+  // Drop back-to-back rows that say exactly the same thing.
+  const deduped = [];
+  for (const event of sorted) {
+    const prev = deduped[deduped.length - 1];
+    const identical =
+      prev &&
+      prev.from === event.from &&
+      prev.to === event.to &&
+      prev.oldAgentId === event.oldAgentId &&
+      prev.newAgentId === event.newAgentId &&
+      !prev.note &&
+      !event.note;
 
-    // try to resolve assigned staff name from the current case details when available
-    const newAgentId = item?.newAgentId ?? item?.assignedAgentId ?? item?.agentId ?? null;
-    if (!newAgentId) return null;
-    const assigned = caseDetails?.assignedSupport;
-    if (assigned && assigned.id === newAgentId) {
-      return `${assigned.firstName || ""} ${assigned.lastName || ""}`.trim();
-    }
-    // fallback: if history item includes changedBy relation for staff, that is not the assigned staff
-    return null;
-  };
+    if (!identical) deduped.push(event);
+  }
+  return deduped;
+};
 
-  const timeline = Array.isArray(history)
-    ? (() => {
-        const sorted = [...history].sort((a, b) => {
-          const dateA = getTimelineDate(a);
-          const dateB = getTimelineDate(b);
+/* ------------------------------------------------------------------ */
+/* What each kind of card shows                                        */
+/* A field is [label, getValue(event, caseDetails), emphasis?]         */
+/* Empty values are skipped automatically.                             */
+/* ------------------------------------------------------------------ */
 
-          if (!dateA && !dateB) return 0;
-          if (!dateA) return 1;
-          if (!dateB) return -1;
+const actor = (label, emphasis = false) => [label, (e) => e.actorName, emphasis];
+const assigned = ["Assigned to", (e, c) => resolveAssignedName(e, c)];
+const previous = ["Previous status", (e) => formatStatus(e.from)];
 
-          return dateA.getTime() - dateB.getTime();
-        }).filter(hasMeaningfulEvent);
+const STATUS_CONFIG = {
+  OPEN: {
+    title: "Case created",
+    fields: [actor("Created by", true), ["Created on", (e) => formatDateTime(e.date)]],
+  },
+  IN_PROGRESS: {
+    title: "Case in progress",
+    fields: [actor("Started by", true), assigned, previous],
+  },
+  PENDING: {
+    title: "Awaiting customer or internal action",
+    fields: [
+      ["Pending reason", (e) => e.reason || "(no reason provided)", true],
+      actor("Performed by"),
+      previous,
+    ],
+  },
+  ESCALATED: {
+    title: "Escalated to support lead",
+    fields: [
+      ["Escalated to", (e) => e.reason || "(team/person not specified)", true],
+      actor("Escalated by"),
+      previous,
+    ],
+  },
+  RESOLVED: {
+    title: "Resolution prepared",
+    fields: [
+      actor("Resolved by", true),
+      [
+        "Resolution",
+        (e, c) =>
+          e.resolution ||
+          e.note ||
+          e.reason ||
+          c?.resolutionSummary ||
+          "(no resolution provided)",
+      ],
+      previous,
+    ],
+  },
+  CLOSED: {
+    title: "Case completed and closed",
+    headline: "Case closed",
+    fields: [actor("Closed by"), previous],
+  },
+  CANCELLED: {
+    title: "Case cancelled",
+    headline: "Case cancelled",
+    fields: [
+      actor("Cancelled by"),
+      ["Reason", (e) => e.reason || "(no reason provided)"],
+      previous,
+    ],
+  },
+};
 
-        const deduped = [];
-        for (const item of sorted) {
-          const prev = deduped[deduped.length - 1];
-          if (!prev) {
-            deduped.push(item);
-            continue;
-          }
+const ASSIGNMENT_CONFIG = {
+  title: "Case assigned",
+  fields: [
+    ["Assigned to", (e, c) => resolveAssignedName(e, c) || "Support staff"],
+    actor("Assigned by"),
+  ],
+};
 
-const prevFrom = normalizeText(prev?.fromStatus ?? prev?.oldStatus ?? prev?.previousStatus);
-          const prevTo = normalizeText(prev?.toStatus ?? prev?.newStatus ?? prev?.status);
-          /* [COMMENTED OUT] priority hidden from customer
-          const prevOldPr = normalizeText(prev?.oldPriority ?? prev?.previousPriority);
-          const prevNewPr = normalizeText(prev?.newPriority ?? prev?.currentPriority);
-          */
-          const prevOldAgent = prev?.oldAgentId ?? prev?.previousAgentId ?? null;
-          const prevNewAgent = prev?.newAgentId ?? prev?.assignedAgentId ?? prev?.agentId ?? null;
-          const prevNote = prev?.note && prev.note.trim();
+const getConfig = (event) => {
+  if (event.isCreation) return STATUS_CONFIG.OPEN;
+  if (event.statusChanged && STATUS_CONFIG[event.to]) return STATUS_CONFIG[event.to];
 
-          const curFrom = normalizeText(item?.fromStatus ?? item?.oldStatus ?? item?.previousStatus);
-          const curTo = normalizeText(item?.toStatus ?? item?.newStatus ?? item?.status);
-          /* [COMMENTED OUT] priority hidden from customer
-          const curOldPr = normalizeText(item?.oldPriority ?? item?.previousPriority);
-          const curNewPr = normalizeText(item?.newPriority ?? item?.currentPriority);
-          */
-          const curOldAgent = item?.oldAgentId ?? item?.previousAgentId ?? null;
-          const curNewAgent = item?.newAgentId ?? item?.assignedAgentId ?? item?.agentId ?? null;
-          const curNote = item?.note && item.note.trim();
-
-          const identical = prevFrom === curFrom && prevTo === curTo && /* prevOldPr === curOldPr && prevNewPr === curNewPr && */ prevOldAgent === curOldAgent && prevNewAgent === curNewAgent && !prevNote && !curNote;
-
-          if (!identical) deduped.push(item);
-        }
-
-        return deduped;
-      })()
-    : [];
-
-  if (timeline.length === 0) {
-    return <div className="text-gray-500 text-center py-8">No timeline available</div>;
+  if (event.statusChanged) {
+    return {
+      title: `Case moved from ${formatStatus(event.from)} to ${formatStatus(event.to)}`,
+      fields: [actor("Changed by")],
+    };
   }
 
-  return (
-    <div className="mt-8">
-      <h3 className="text-xl font-bold mb-6 text-navy-950">Case Timeline</h3>
+  if (event.assignmentChanged) return ASSIGNMENT_CONFIG;
 
-      <div className="space-y-8">
-        {timeline.map((item, index) => {
-const fromStatus = normalizeText(item?.fromStatus ?? item?.oldStatus ?? item?.previousStatus);
-          const toStatus = normalizeText(item?.toStatus ?? item?.newStatus ?? item?.status);
-          /* [COMMENTED OUT] priority hidden from customer
-          const oldPriority = normalizeText(item?.oldPriority ?? item?.previousPriority);
-          const newPriority = normalizeText(item?.newPriority ?? item?.currentPriority);
-          */
-          const oldAgentId = item?.oldAgentId ?? item?.previousAgentId ?? null;
-          const newAgentId = item?.newAgentId ?? item?.assignedAgentId ?? item?.agentId ?? null;
-          const hasStatusChange = Boolean(fromStatus && toStatus && fromStatus !== toStatus);
-          const isOpenCreation = isInitialOpenEvent(fromStatus, toStatus);
-          /* [COMMENTED OUT] priority hidden from customer
-          const hasPriorityChange = Boolean(oldPriority && newPriority && oldPriority !== newPriority);
-          */
-          const hasAssignmentChange = Boolean(oldAgentId && newAgentId && oldAgentId !== newAgentId);
-          const changedByName = getDisplayName(item?.changedBy ?? item?.actor ?? null);
-          const timelineDate = getTimelineDate(item);
-          const assignedName = findAssignedName(item);
+  return {
+    title: event.to ? formatStatus(event.to) : "Case updated",
+    fields: [actor("Updated by")],
+  };
+};
+
+/* ------------------------------------------------------------------ */
+/* Component                                                           */
+/* ------------------------------------------------------------------ */
+
+export default function CaseTimeline({
+  history = [],
+  caseDetails = null,
+  newestFirst = false,
+  showHeading = true,
+}) {
+  const events = useMemo(() => buildTimeline(history), [history]);
+
+  if (events.length === 0) {
+    return (
+      <div className="py-8 text-center text-gray-500">
+        No updates yet. Progress will appear here as your case moves.
+      </div>
+    );
+  }
+
+  const latest = events[events.length - 1];
+  const display = newestFirst ? [...events].reverse() : events;
+
+  return (
+    <section className="mt-8">
+      {showHeading && (
+        <h3 className="mb-6 text-xl font-bold text-navy-950">Case Timeline</h3>
+      )}
+
+      <ol>
+        {display.map((event, index) => {
+          const config = getConfig(event);
+          const isLast = index === display.length - 1;
+          const isLatest = event === latest;
+          const dot = DOT_STYLES[event.to] || DOT_STYLES.DEFAULT;
+
+          const rows = (config.fields || [])
+            .map(([label, getValue, emphasis]) => ({
+              label,
+              value: getValue(event, caseDetails),
+              emphasis,
+            }))
+            .filter((row) => row.value);
+
+          // Show the free-text note only if a field has not already shown it.
+          const showNote =
+            event.note && !rows.some((row) => row.value === event.note);
 
           return (
-            <div key={item.id || `${fromStatus}-${toStatus}-${newAgentId}`} className="flex gap-4">
+            <li
+              key={event.id ?? `${index}-${event.from}-${event.to}-${event.newAgentId}`}
+              className={`flex gap-4 ${isLast ? "" : "pb-8"}`}
+            >
               <div className="flex flex-col items-center">
-                <div className="w-4 h-4 rounded-full bg-navy-600" />
-                {index !== timeline.length - 1 && <div className="flex-1 w-[2px] bg-gray-300 mt-2" />}
+                <div
+                  className={`h-4 w-4 shrink-0 rounded-full ${dot.bg} ${
+                    isLatest ? `ring-4 ${dot.ring}` : ""
+                  }`}
+                  aria-hidden="true"
+                />
+                {!isLast && <div className="mt-2 w-[2px] flex-1 bg-gray-300" />}
               </div>
 
-              <div className="bg-slate-50 rounded-xl p-4 flex-1 border border-slate-200">
-                <div className="flex justify-between items-center gap-3">
-                  <StatusBadge status={(hasStatusChange ? toStatus : item?.status || toStatus || "OPEN").toUpperCase()} />
-                  {timelineDate ? (
-                    <span className="text-xs text-slate-500">{timelineDate.toLocaleString()}</span>
+              <div className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    {/* Same format as before: underscores replaced with spaces. */}
+                    <StatusBadge
+                      status={(event.to || event.from || "OPEN").replace(/_/g, " ")}
+                    />
+                    {isLatest && (
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                        Latest
+                      </span>
+                    )}
+                  </div>
+
+                  {event.date ? (
+                    <time
+                      dateTime={event.date.toISOString()}
+                      className="text-[13px] text-slate-500"
+                    >
+                      {formatDateTime(event.date)}
+                    </time>
                   ) : (
-                    <span className="text-xs text-slate-400">Date unavailable</span>
+                    <span className="text-[13px] text-slate-400">Date unavailable</span>
                   )}
                 </div>
 
-                {(hasStatusChange || isOpenCreation) && (
-                  <h4 className="font-semibold text-navy-900 mt-3">
-                    {getStatusEventText(fromStatus, toStatus)}
-                  </h4>
-                )}
+                <h4 className="mt-3 font-semibold text-navy-900">{config.title}</h4>
 
-                {!hasStatusChange && !isOpenCreation && item?.status && (
-                  <h4 className="font-semibold text-navy-900 mt-3">{formatStatus(item.status)}</h4>
-                )}
+                <div className="mt-2 space-y-1 text-sm text-slate-700">
+                  {config.headline && (
+                    <p className="font-medium">{config.headline}</p>
+                  )}
 
-{/* [COMMENTED OUT] priority updated notice hidden from customer
-                {hasPriorityChange && (
-                  <p className="text-sm text-orange-600 mt-2">
-                    Priority updated: {formatPriority(oldPriority)} → {formatPriority(newPriority)}
-                  </p>
-                )}
-                */}
+                  {rows.map((row) => (
+                    <p key={row.label} className={row.emphasis ? "font-medium" : undefined}>
+                      {row.label}: {row.value}
+                    </p>
+                  ))}
 
-                {hasAssignmentChange && (
-                  <div className="mt-2 text-slate-700">
-                    <p>Assigned to: {assignedName || (caseDetails?.assignedSupport ? `${caseDetails.assignedSupport.firstName || ""} ${caseDetails.assignedSupport.lastName || ""}`.trim() : "(staff)")}</p>
-                    <p>Assigned by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                  </div>
-                )}
-
-                {/* PENDING */}
-                {hasStatusChange && toStatus?.toUpperCase() === "PENDING" && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Pending reason: {item?.reason || item?.note || "(no reason provided)"}</p>
-                    <p>Performed by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                    <p>Previous status: {formatStatus(fromStatus)}</p>
-                  </div>
-                )}
-
-                {/* ESCALATED */}
-                {hasStatusChange && toStatus?.toUpperCase() === "ESCALATED" && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Escalated to: {item?.reason || item?.note || "(team/person not specified)"}</p>
-                    <p>Escalated by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                    <p>Previous status: {formatStatus(fromStatus)}</p>
-                  </div>
-                )}
-
-                {/* RESOLVED */}
-                {hasStatusChange && toStatus?.toUpperCase() === "RESOLVED" && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Resolved by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                    <p>Resolution: {item?.resolutionSnapshot || item?.note || item?.reason || caseDetails?.resolutionSummary || "(no resolution provided)"}</p>
-                    <p>Previous status: {formatStatus(fromStatus)}</p>
-                  </div>
-                )}
-
-                {/* CUSTOMER CONFIRMATION */}
-                {hasStatusChange && toStatus?.toUpperCase() === "CUSTOMER CONFIRMATION" && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Resolution ready for customer verification</p>
-                    <p>Triggered by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                    <p>Resolution: {item?.resolutionSnapshot || item?.note || caseDetails?.resolutionSummary || "(no resolution provided)"}</p>
-                    <p>Confirmation deadline: {formatDateStr(new Date(getTimelineDate(item)?.getTime() + 2 * 24 * 60 * 60 * 1000))} {formatTimeStr(new Date(getTimelineDate(item)?.getTime() + 2 * 24 * 60 * 60 * 1000))}</p>
-                    <p>Previous status: {formatStatus(fromStatus)}</p>
-                  </div>
-                )}
-
-                {/* Auto no-response -> back to IN_PROGRESS */}
-                {hasStatusChange && fromStatus?.toUpperCase() === "CUSTOMER CONFIRMATION" && toStatus?.toUpperCase() === "IN PROGRESS" && (item?.actorType === "SYSTEM" || (item?.actorType || "").toUpperCase() === "SYSTEM") && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Customer did not respond within the confirmation period — returning to active work</p>
-                    <p>Performed by: System</p>
-                    <p>Checked: {formatDateStr(timelineDate)} {formatTimeStr(timelineDate)}</p>
-                    <p>Previous status: Customer Confirmation</p>
-                    <p>New status: In Progress</p>
-                  </div>
-                )}
-
-                {/* CLOSED */}
-                {hasStatusChange && toStatus?.toUpperCase() === "CLOSED" && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Case closed</p>
-                    <p>Closed by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                    <p>Previous status: {formatStatus(fromStatus)}</p>
-                  </div>
-                )}
-
-                {/* CANCELLED */}
-                {hasStatusChange && toStatus?.toUpperCase() === "CANCELLED" && (
-                  <div className="mt-2 text-slate-700">
-                    <p className="font-medium">Case cancelled</p>
-                    <p>Cancelled by: {getDisplayName(item?.changedBy ?? item?.actor ?? null)}</p>
-                    <p>Reason: {item?.reason || item?.note || "(no reason provided)"}</p>
-                    <p>Previous status: {formatStatus(fromStatus)}</p>
-                  </div>
-                )}
-
-                {item?.note && <p className="mt-2 text-slate-600">{item.note}</p>}
-
-                <p className="text-sm text-gray-500 mt-3">Changed by: {changedByName}</p>
+                  {showNote && (
+                    <p className="whitespace-pre-line text-slate-600">{event.note}</p>
+                  )}
+                </div>
               </div>
-            </div>
+            </li>
           );
         })}
-      </div>
-    </div>
+      </ol>
+    </section>
   );
 }
-

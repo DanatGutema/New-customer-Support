@@ -6,6 +6,8 @@ import crypto from "crypto";
 import bcrypt from "bcrypt";
 import { sendPasswordResetEmail } from "../../utils/email";
 import { PartyType, NotificationType, TokenType } from "../../../generated/prisma/client";
+import { TimeTrackingService } from "../timeTracking/timeTracking.service";
+import { JwtUtils } from "../../utils/jwt";
 
 
 const isProd = process.env.NODE_ENV === "production";
@@ -68,9 +70,8 @@ export const requestSigninHelp = async (req: Request, res: Response): Promise<vo
     ]);
 
     const userType = staffUser ? "STAFF" : customerUser ? "CUSTOMER" : "UNKNOWN";
-    const message = `Sign-in help requested for ${
-      userType === "UNKNOWN" ? "an unknown account" : `${userType.toLowerCase()} account`
-    } (${normalizedEmail}). Please follow up with the user.`;
+    const message = `Sign-in help requested for ${userType === "UNKNOWN" ? "an unknown account" : `${userType.toLowerCase()} account`
+      } (${normalizedEmail}). Please follow up with the user.`;
 
     const recipientIds = systemAdmins.map((admin) => admin.id);
 
@@ -94,6 +95,15 @@ export const requestSigninHelp = async (req: Request, res: Response): Promise<vo
 
 export const logout = async (req: Request, res: Response): Promise<void> => {
   try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      try {
+        const decoded = JwtUtils.verifyAccessToken(authHeader.split(" ")[1]);
+        if (decoded && decoded.partyType === "STAFF") {
+          await TimeTrackingService.closeRunningSessionForStaff(decoded.userId, "LOGOUT");
+        }
+      } catch { }
+    }
     await revokeRefreshToken(req.cookies?.refreshToken);
     res.clearCookie("refreshToken", REFRESH_COOKIE_CLEAR);
     res.status(200).json({ message: "Logged out successfully" });
@@ -107,6 +117,9 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
 export const logoutAll = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = (req as any).user;
+    if (user && user.partyType === "STAFF") {
+      await TimeTrackingService.closeRunningSessionForStaff(user.userId, "LOGOUT");
+    }
     await revokeAllRefreshTokens(user.userId, user.partyType);
     res.clearCookie("refreshToken", REFRESH_COOKIE_CLEAR);
     res.status(200).json({ message: "Logged out from all devices." });
@@ -118,7 +131,7 @@ export const logoutAll = async (req: Request, res: Response): Promise<void> => {
 
 export const forgotPassword = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, userType = "STAFF" } = req.body; 
+    const { email, userType = "STAFF" } = req.body;
 
     if (!email) {
       return res.status(400).json({ success: false, message: "Email is required." });
@@ -143,7 +156,7 @@ export const forgotPassword = async (req: Request, res: Response, next: NextFunc
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); 
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
     await prisma.authToken.create({
       data: {
@@ -199,7 +212,7 @@ export const resetPassword = async (req: Request, res: Response, next: NextFunct
       where: {
         tokenHash: tokenHash,
         tokenType: TokenType.PASSWORD_RESET,
-        usedAt: null, 
+        usedAt: null,
         expiresAt: { gt: new Date() },
       },
     });

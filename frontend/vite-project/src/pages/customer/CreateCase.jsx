@@ -7,7 +7,7 @@ import {
   getCategories,
   getSubcategories,
   getServiceTypes
-} from "../../api/productserviceApi";
+} from "../../api/productServiceApi";
 
 import {
   createCase
@@ -54,6 +54,7 @@ export default function CreateCase() {
   const [files, setFiles] = useState([]);
   const MAX_FILES = 5;
   const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+  const [submitting, setSubmitting] = useState(false);
 
 
   useEffect(() => {
@@ -66,8 +67,8 @@ export default function CreateCase() {
     try {
 
       const [cat, sub, service] = await Promise.all([
-        getCategories(),
-        getSubcategories(),
+        getCategories(true),   // activeOnly — deactivated categories hidden
+        getSubcategories(true),
         getServiceTypes(),
       ]);
 
@@ -141,6 +142,8 @@ export default function CreateCase() {
 
     e.preventDefault();
 
+    if (submitting) return; // prevent double submission
+
     if (
       !form.branchName ||
       !form.subject ||
@@ -159,6 +162,8 @@ export default function CreateCase() {
 
     try {
 
+      setSubmitting(true);
+
       const data = new FormData();
 
       data.append("branchName", form.branchName);
@@ -176,10 +181,6 @@ export default function CreateCase() {
         "serviceTypeId",
         form.serviceTypeId
       );
-      // data.append(           // [COMMENTED OUT] priority is assigned by the system/manager
-      //   "priority",
-      //   form.priority || "MEDIUM"
-      // );
 
       if (files.length > 0) {
         files.forEach((f) => data.append("attachments", f));
@@ -204,6 +205,10 @@ export default function CreateCase() {
         error?.response?.data?.message ||
         "Failed creating case"
       );
+
+    } finally {
+
+      setSubmitting(false);
 
     }
 
@@ -1003,6 +1008,7 @@ export default function CreateCase() {
 
                 <button
                   type="submit"
+                  disabled={submitting}
                   className="
                     px-7
                     py-2.5
@@ -1015,10 +1021,12 @@ export default function CreateCase() {
                     shadow-sm
                     hover:shadow
                     transition
+                    disabled:opacity-60
+                    disabled:cursor-not-allowed
                   "
                 >
 
-                  Submit Case
+                  {submitting ? "Submitting..." : "Submit Case"}
 
                 </button>
 

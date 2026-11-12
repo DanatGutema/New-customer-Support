@@ -4,32 +4,19 @@ export default function OrganizationTable({
   organizations,
   onDeactivate,
   onReactivate,
+  onEdit,
 }) {
   return (
-    <div
-      className="
-      grid
-      lg:grid-cols-2
-      xl:grid-cols-3
-      gap-8
-      "
-    >
-      {organizations.map(
-        (item) => (
-          <OrganizationCard
-            key={item.id}
-            organization={
-              item
-            }
-            onDeactivate={
-              onDeactivate
-            }
-            onReactivate={
-              onReactivate
-            }
-          />
-        )
-      )}
+    <div className="grid lg:grid-cols-2 xl:grid-cols-3 gap-8">
+      {organizations.map((item) => (
+        <OrganizationCard
+          key={item.id}
+          organization={item}
+          onDeactivate={onDeactivate}
+          onReactivate={onReactivate}
+          onEdit={onEdit}
+        />
+      ))}
     </div>
   );
 }

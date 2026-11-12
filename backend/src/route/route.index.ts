@@ -18,14 +18,16 @@ import { OrganizationRouter } from "../modules/organization/organization.route";
 import { ManagerRoute } from "../modules/analytics/managers/manager.route";
 import { PermissionRoute } from "../modules/permission/staff.permission.route";
 import { ReportsExportRouter } from "../modules/reports";
+import { CannedReplyRouter } from "../modules/cases/cannedReply.route";
+import { TimeTrackingRouter } from "../modules/timeTracking/timeTracking.route";
 import {
-ProductFieldRouter
+  ProductFieldRouter
 }
-from "../modules/productField/productField.route";
+  from "../modules/productField/productField.route";
 import {
-ProductCustomFieldRouter
+  ProductCustomFieldRouter
 }
-from "../modules/productCustomField/productCustomField.route";
+  from "../modules/productCustomField/productCustomField.route";
 
 const router = Router();
 
@@ -49,13 +51,15 @@ router.use("/organization", OrganizationRouter);
 router.use("/manager", ManagerRoute)
 router.use("/permissions", PermissionRoute)
 router.use("/reports/export", ReportsExportRouter);
+router.use("/canned-replies", CannedReplyRouter);
+router.use("/time", TimeTrackingRouter);
 router.use(
-"/api/product",
-ProductFieldRouter
+  "/api/product",
+  ProductFieldRouter
 );
 router.use(
-"/product",
-ProductCustomFieldRouter
+  "/product",
+  ProductCustomFieldRouter
 );
 const PrivateRoute = Router();
 

@@ -349,7 +349,6 @@ export const deactivateUserAccount = async (
   await validateAdminActor(adminId);
 
   if (targetType === "STAFF") {
-    // Prevent self-deactivation
     if (userId === adminId) {
       throw new BadRequestError("You cannot deactivate your own admin account.");
     }
@@ -361,6 +360,12 @@ export const deactivateUserAccount = async (
       throw new BadRequestError("Staff account is already deactivated.");
     }
 
+    // Revoke all active sessions so the deactivation takes effect immediately
+    await prisma.refreshToken.updateMany({
+      where: { userId, userType: "STAFF", revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
     return prisma.staff.update({
       where: { id: userId },
       data: { status: "DEACTIVATED", updatedById: adminId },
@@ -369,14 +374,18 @@ export const deactivateUserAccount = async (
   }
 
   if (targetType === "CUSTOMER") {
-    const customer = await prisma.customer.findUnique({
-      where: { id: userId },
-    });
+    const customer = await prisma.customer.findUnique({ where: { id: userId } });
     if (!customer) throw new NotFoundError("Customer account not found.");
 
     if (customer.status === "DEACTIVATED") {
       throw new BadRequestError("Customer account is already deactivated.");
     }
+
+    // Revoke all active sessions
+    await prisma.refreshToken.updateMany({
+      where: { userId, userType: "CUSTOMER", revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
 
     return prisma.customer.update({
       where: { id: userId },

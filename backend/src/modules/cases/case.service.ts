@@ -1,5 +1,5 @@
 import { prisma } from "../../config/database";
-import { BadRequestError, NotFoundError, ForbiddenError} from "../../utils/error";
+import { BadRequestError, NotFoundError, ForbiddenError } from "../../utils/error";
 import {
   CaseStatus,
   CasePriority,
@@ -18,6 +18,8 @@ import { ENV } from "../../config/env";
 import { sendCaseCreationCustomerEmail, sendSharedSupportInboxAlert, sendStaffCaseUpdateEmail } from "../../utils/email";
 import { createStatusHistory } from "./statusHistory.service";
 import { generateNextCaseNumber } from "../../utils/caseNumber";
+import { TimeTrackingService } from "../timeTracking/timeTracking.service";
+// import { computeSlaInfo } from "../../utils/sla"; // SLA DISABLED
 
 
 
@@ -25,134 +27,168 @@ type Priority = "HIGH" | "MEDIUM" | "LOW";
 
 export const getAllCases = async (
 
-    page: number = 1,
+  page: number = 1,
 
-    limit: number = 10,
+  limit: number = 10,
 
-    sortBy: string = "createdAt",
+  sortBy: string = "createdAt",
 
-    order: "asc" | "desc" = "desc"
+  order: "asc" | "desc" = "desc"
 
 ) => {
 
-    const skip = (page - 1) * limit;
+  const skip = (page - 1) * limit;
 
-    const orderBy: any = {};
+  const orderBy: any = {};
 
-    switch (sortBy) {
+  switch (sortBy) {
 
-        case "priority":
+    case "priority":
 
-            orderBy.priority = order;
-            break;
+      orderBy.priority = order;
+      break;
 
-        case "status":
+    case "status":
 
-            orderBy.status = order;
-            break;
+      orderBy.status = order;
+      break;
 
-        case "customer":
+    case "customer":
 
-            orderBy.customer = {
-                firstName: order
-            };
-            break;
+      orderBy.customer = {
+        firstName: order
+      };
+      break;
 
-        default:
+    default:
 
-            orderBy.createdAt = order;
+      orderBy.createdAt = order;
+
+  }
+
+  const [cases, total] = await Promise.all([
+
+    prisma.caseReport.findMany({
+
+      skip,
+
+      take: limit,
+
+      orderBy,
+
+      include: {
+
+        customer: {
+
+          include: {
+
+            organization: true
+
+          }
+
+        },
+
+        assignedSupport: true,
+
+        statusHistory: {
+          orderBy: { createdAt: "asc" },
+          select: { toStatus: true, fromStatus: true, createdAt: true },
+        },
+
+      }
+
+    }),
+
+    prisma.caseReport.count()
+
+  ]);
+
+  // SLA attachment — DISABLED
+  // const terminalStatuses = ["RESOLVED", "CLOSED", "CANCELLED"];
+  // const casesWithSla = cases.map((c) => {
+  //     const sla = terminalStatuses.includes(c.status)
+  //         ? null
+  //         : computeSlaInfo(c.statusHistory as any, c.priority);
+  //     return { ...c, sla };
+  // });
+
+  return {
+
+    cases: cases,
+
+    pagination: {
+
+      page,
+
+      limit,
+
+      total,
+
+      totalPages: Math.ceil(total / limit)
 
     }
 
-    const [cases, total] = await Promise.all([
-
-        prisma.caseReport.findMany({
-
-            skip,
-
-            take: limit,
-
-            orderBy,
-
-            include: {
-
-                customer: {
-
-                    include: {
-
-                        organization: true
-
-                    }
-
-                },
-
-                assignedSupport: true
-
-            }
-
-        }),
-
-        prisma.caseReport.count()
-
-    ]);
-
-    return {
-
-        cases,
-
-        pagination: {
-
-            page,
-
-            limit,
-
-            total,
-
-            totalPages: Math.ceil(total / limit)
-
-        }
-
-    };
+  };
 
 };
 
 export const getCase = async (id: string) => {
-    try {
-        return await prisma.caseReport.findUnique({
-            where: { id },
-            include: {
-                customer: { include: { organization: true } },
-                assignedSupport: true,
-                attachments: true,
-                productCategory: { select: { id: true, name: true } },
-                productSubcategory: { select: { id: true, name: true } },
-                serviceType: { select: { id: true, name: true } },
-                statusHistory: {
-                    include: { changedBy: { select: { firstName: true, lastName: true } } },
-                    orderBy: { createdAt: "asc" },
-                },
-            },
-        });
-    } catch (err: any) {
-        if (err?.code === 'P2022') {
-            // fallback: return case without statusHistory to avoid crashing when DB schema is out-of-sync
-            const result = await prisma.caseReport.findUnique({
-                where: { id },
-                include: {
-                    customer: { include: { organization: true } },
-                    assignedSupport: true,
-                    attachments: true,
-                    productCategory: { select: { id: true, name: true } },
-                    productSubcategory: { select: { id: true, name: true } },
-                    serviceType: { select: { id: true, name: true } },
-                    // omit statusHistory in fallback
-                },
-            });
-            if (result && !(result as any).statusHistory) (result as any).statusHistory = [];
-            return result;
-        }
-        throw err;
+  try {
+    const result = await prisma.caseReport.findUnique({
+      where: { id },
+      include: {
+        customer: { include: { organization: true } },
+        assignedSupport: true,
+        attachments: true,
+        productCategory: { select: { id: true, name: true } },
+        productSubcategory: { select: { id: true, name: true } },
+        serviceType: { select: { id: true, name: true } },
+        statusHistory: {
+          include: { changedBy: { select: { firstName: true, lastName: true } } },
+          orderBy: { createdAt: "asc" },
+        },
+        messages: {
+          include: {
+            authorStaff: { select: { id: true, firstName: true, lastName: true, isPSsupport: true, isManager: true, isSAdmin: true } },
+            authorCustomer: { select: { id: true, firstName: true, lastName: true, email: true } },
+            attachments: true,
+          },
+          orderBy: { createdAt: "asc" },
+        },
+        // Email thread log
+        // (filtered below based on viewer type)
+      },
+    });
+
+    if (!result) return null;
+
+    // SLA info — DISABLED
+    // const terminalStatuses = ["RESOLVED", "CLOSED", "CANCELLED"];
+    // let sla = null;
+    // if (!terminalStatuses.includes(result.status)) {
+    //     sla = computeSlaInfo(result.statusHistory as any, result.priority);
+    // }
+    // return { ...result, sla };
+
+    return result;
+  } catch (err: any) {
+    if (err?.code === 'P2022') {
+      const result = await prisma.caseReport.findUnique({
+        where: { id },
+        include: {
+          customer: { include: { organization: true } },
+          assignedSupport: true,
+          attachments: true,
+          productCategory: { select: { id: true, name: true } },
+          productSubcategory: { select: { id: true, name: true } },
+          serviceType: { select: { id: true, name: true } },
+        },
+      });
+      if (result && !(result as any).statusHistory) (result as any).statusHistory = [];
+      return result ? { ...result, sla: null } : null;
     }
+    throw err;
+  }
 };
 export interface CreateCaseInput {
   branchName: string;
@@ -163,7 +199,7 @@ export interface CreateCaseInput {
   description: string;
   serviceTypeId: string;
   creationReason?: string;
-  staffActorId?: string; 
+  staffActorId?: string;
 }
 
 
@@ -248,8 +284,8 @@ const getUpwardManagementRecipients = async (assignedStaffId: string): Promise<s
     if (deptManagerId && deptManagerId !== assignedStaffId) {
       recipientIds.add(deptManagerId);
     }
-  } 
-  
+  }
+
   const systemAdmins = await prisma.staff.findMany({
     where: { isSAdmin: true },
     select: { id: true },
@@ -264,7 +300,7 @@ const getUpwardManagementRecipients = async (assignedStaffId: string): Promise<s
   return Array.from(recipientIds);
 };
 
-const getCaseUpdateStaffRecipients = async (caseId: string, excludeStaffId?: string): Promise<Array<{id: string, email: string, firstName: string, lastName: string | null}>> => {
+const getCaseUpdateStaffRecipients = async (caseId: string, excludeStaffId?: string): Promise<Array<{ id: string, email: string, firstName: string, lastName: string | null }>> => {
   const targetCase = await prisma.caseReport.findUnique({
     where: { id: caseId },
     include: {
@@ -342,10 +378,10 @@ const getCaseUpdateStaffRecipients = async (caseId: string, excludeStaffId?: str
           select: { managerId: true },
         });
         return department?.managerId || null;
-  }
+      }
 
-  return null;
-};
+      return null;
+    };
 
     const sectionManagerId = await getManagerOfUnit("section", sectionId);
     if (sectionManagerId && sectionManagerId !== excludeStaffId) {
@@ -454,16 +490,16 @@ export const createCase = async (input: any) => {
         attachments:
           attachments.length > 0
             ? {
-                create: attachments.map((file: any) => ({
-                  fileName: file.fileName,
-                  storagePath: file.storagePath,
-                  fileSizeBytes: BigInt(file.fileSizeBytes),
-                  mimeType: file.mimeType,
-                  uploaderType: uploaderType as any,
-                  uploadedByCustomerId: isStaff ? null : caseData.customerId,
-                  uploadedByStaffId: isStaff ? staffActorId : null,
-                })),
-              }
+              create: attachments.map((file: any) => ({
+                fileName: file.fileName,
+                storagePath: file.storagePath,
+                fileSizeBytes: BigInt(file.fileSizeBytes),
+                mimeType: file.mimeType,
+                uploaderType: uploaderType as any,
+                uploadedByCustomerId: isStaff ? null : caseData.customerId,
+                uploadedByStaffId: isStaff ? staffActorId : null,
+              })),
+            }
             : undefined,
       },
       include: {
@@ -498,13 +534,11 @@ export const createCase = async (input: any) => {
 
   if (completeCaseDetails) {
     const customerFullName =
-      `${completeCaseDetails.customer?.firstName || ""} ${
-        completeCaseDetails.customer?.lastName || ""
-      }`.trim() || "Customer";
+      `${completeCaseDetails.customer?.firstName || ""} ${completeCaseDetails.customer?.lastName || ""
+        }`.trim() || "Customer";
 
     const staffFullName = completeCaseDetails.updatedBy
-      ? `${completeCaseDetails.updatedBy.firstName || ""} ${
-          completeCaseDetails.updatedBy.lastName || ""
+      ? `${completeCaseDetails.updatedBy.firstName || ""} ${completeCaseDetails.updatedBy.lastName || ""
         }`.trim()
       : "Staff";
 
@@ -598,8 +632,8 @@ export const createCase = async (input: any) => {
     isStaff && completeCaseDetails?.updatedBy
       ? `${completeCaseDetails.updatedBy.firstName} ${completeCaseDetails.updatedBy.lastName}`
       : completeCaseDetails?.customer
-      ? `${completeCaseDetails.customer.firstName} ${completeCaseDetails.customer.lastName}`
-      : "Customer";
+        ? `${completeCaseDetails.customer.firstName} ${completeCaseDetails.customer.lastName}`
+        : "Customer";
 
   CaseEventBroker.emit(CASE_EVENTS.CREATED, {
     caseId: newCase.id,
@@ -629,46 +663,46 @@ export const assignCaseSupport = async (
     sectionId?: string;
   }
 ) => {
- const targetCase = await prisma.caseReport.findUnique({
-  where: { id: caseId },
-  select: {
-    id: true,
-    caseNumber: true,
-    customerId: true, 
-    subject: true,
-    status: true,
-    priority: true,
-    assignedSupportId: true,
-    assignedSupport: {
-      select: {
-        id: true,
-        sectionId: true,
-        section: {
-          select: {
-            id: true,
-            divisionId: true,
-            division: {
-              select: {
-                id: true,
-                departmentId: true,
+  const targetCase = await prisma.caseReport.findUnique({
+    where: { id: caseId },
+    select: {
+      id: true,
+      caseNumber: true,
+      customerId: true,
+      subject: true,
+      status: true,
+      priority: true,
+      assignedSupportId: true,
+      assignedSupport: {
+        select: {
+          id: true,
+          sectionId: true,
+          section: {
+            select: {
+              id: true,
+              divisionId: true,
+              division: {
+                select: {
+                  id: true,
+                  departmentId: true,
+                },
               },
             },
           },
         },
       },
     },
-  },
-});
+  });
 
-if (!targetCase) {
-  throw new NotFoundError("Case report not found.");
-}
+  if (!targetCase) {
+    throw new NotFoundError("Case report not found.");
+  }
 
-const caseScope = {
-  sectionId: targetCase.assignedSupport?.sectionId ?? null,
-  divisionId: targetCase.assignedSupport?.section?.divisionId ?? null,
-  departmentId: targetCase.assignedSupport?.section?.division?.departmentId ?? null,
-};
+  const caseScope = {
+    sectionId: targetCase.assignedSupport?.sectionId ?? null,
+    divisionId: targetCase.assignedSupport?.section?.divisionId ?? null,
+    departmentId: targetCase.assignedSupport?.section?.division?.departmentId ?? null,
+  };
 
   await validateHierarchyScope(operator, caseScope, assignedSupportId);
   await prisma.$transaction(async (tx) => {
@@ -754,7 +788,7 @@ const caseScope = {
       ? `${completeCaseDetails.updatedBy.firstName} ${completeCaseDetails.updatedBy.lastName}`
       : "Manager";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,
@@ -784,7 +818,7 @@ export const closeCaseReport = async (
   resolutionSummary: string,
   operatorId: string,
 ) => {
-const targetCase = await prisma.caseReport.findUnique({
+  const targetCase = await prisma.caseReport.findUnique({
     where: { id: caseId },
     include: { customer: true },
   });
@@ -841,7 +875,7 @@ const targetCase = await prisma.caseReport.findUnique({
       ? `${result.updatedBy.firstName} ${result.updatedBy.lastName}`
       : "System Admin";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,
@@ -926,6 +960,13 @@ export const reassignOpenCase = async (
     return updatedCase;
   });
 
+  // Close active time tracking session on case reassignment
+  try {
+    await TimeTrackingService.closeRunningSessionsForCase(caseId, "REASSIGNED");
+  } catch (timeTrackingError) {
+    console.error("[Open Case Reassignment] Time tracking close error:", timeTrackingError);
+  }
+
   CaseEventBroker.emit(CASE_EVENTS.ASSIGNED, {
     caseId: result.id,
     caseNumber: (result as any).caseNumber,
@@ -959,7 +1000,7 @@ export const reassignOpenCase = async (
       ? `${result.updatedBy.firstName} ${result.updatedBy.lastName}`
       : "Supervisor";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,
@@ -1167,7 +1208,7 @@ export async function processPriorityChangeNotifications(params: {
     recipientId,
     recipientType: PartyType.STAFF,
     message: `Priority for Case #${caseNumber} was changed from ${oldPriority || "UNASSIGNED"} to ${newPriority}.`,
-    type: NotificationType.CASE_PRIORITY_CHANGED, 
+    type: NotificationType.CASE_PRIORITY_CHANGED,
     caseReportId: caseId,
   }));
 
@@ -1188,7 +1229,7 @@ export const givePriority = async (
     sectionId?: string;
   }
 ) => {
- const targetCase = await prisma.caseReport.findUnique({
+  const targetCase = await prisma.caseReport.findUnique({
     where: { id: caseId },
     include: {
       assignedSupport: {
@@ -1220,7 +1261,7 @@ export const givePriority = async (
     );
   }
 
-const caseScope = {
+  const caseScope = {
     sectionId: targetCase.assignedSupport?.sectionId ?? null,
     divisionId: targetCase.assignedSupport?.section?.divisionId ?? null,
     departmentId: targetCase.assignedSupport?.section?.division?.departmentId ?? null,
@@ -1292,7 +1333,7 @@ const caseScope = {
       ? `${result.updatedBy.firstName} ${result.updatedBy.lastName}`
       : "Staff Member";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,
@@ -1338,7 +1379,7 @@ export const resolveCase = async (caseId: string, resolutionSummary: string, age
         resolvedAt: new Date(),
         updatedById: agentId,
       },
-      include: { customer: true, updatedBy: true }, 
+      include: { customer: true, updatedBy: true },
     });
 
     await createStatusHistory(tx, {
@@ -1372,7 +1413,7 @@ export const resolveCase = async (caseId: string, resolutionSummary: string, age
     priority: updatedCase.priority,
     actorName: updatedCase.updatedBy ? `${updatedCase.updatedBy.firstName} ${updatedCase.updatedBy.lastName}` : "Agent",
     assignedAgentId: updatedCase.assignedSupportId,
-    sectionId:(updatedCase as any).sectionId,
+    sectionId: (updatedCase as any).sectionId,
   });
 
   try {
@@ -1381,7 +1422,7 @@ export const resolveCase = async (caseId: string, resolutionSummary: string, age
       ? `${updatedCase.updatedBy.firstName} ${updatedCase.updatedBy.lastName}`
       : "Agent";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,
@@ -1468,10 +1509,10 @@ export const closeCaseWithFeedback = async (
 
   try {
     const internalRecipients = new Set<string>();
-    
+
     if (targetCase.assignedSupportId) {
-      internalRecipients.add(targetCase.assignedSupportId); 
-      
+      internalRecipients.add(targetCase.assignedSupportId);
+
       const managers = await getUpwardManagementRecipients(targetCase.assignedSupportId);
       managers.forEach(id => internalRecipients.add(id));
     }
@@ -1495,7 +1536,7 @@ export const closeCaseWithFeedback = async (
       ? `${targetCase.customer.firstName} ${targetCase.customer.lastName || ""}`.trim()
       : "Customer";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,
@@ -1527,7 +1568,7 @@ export const reopenCase = async (caseId: string, customerId: string) => {
   });
 
   if (!targetCase) throw new NotFoundError("Case file not found.");
-  
+
   if (targetCase.customerId !== customerId) {
     throw new BadRequestError("Unauthorized: You do not own this case file.");
   }
@@ -1580,7 +1621,7 @@ export const reopenCase = async (caseId: string, customerId: string) => {
       ? `${reopenedCase.customer.firstName} ${reopenedCase.customer.lastName || ""}`.trim()
       : "Customer";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     for (const staff of staffRecipients) {
       await sendStaffCaseUpdateEmail({
         staffEmail: staff.email,

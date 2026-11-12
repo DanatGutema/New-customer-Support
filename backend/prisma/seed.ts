@@ -17,6 +17,7 @@ export const PERMISSIONS = {
   CASE_READ_HIERARCHY: "CASE_READ_HIERARCHY",
   CASE_ASSIGN: "CASE_ASSIGN",
   CASE_SET_PRIORITY: "CASE_SET_PRIORITY",
+  CASE_RESOLVE: "CASE_RESOLVE",
   CASE_READ_ANALYTICS: "CASE_READ_ANALYTICS",
   CASE_READ_OWN_ANALYTICS: "CASE_READ_OWN_ANALYTICS",
   CASE_CREATE: "CASE_CREATE",
@@ -29,6 +30,7 @@ export const PERMISSIONS = {
 
   SERVICE_MANAGE: "SERVICE_MANAGE",
   ORGANIZATION_MANAGE: "ORGANIZATION_MANAGE",
+  TIME_READ_TEAM: "TIME_READ_TEAM",
 } as const;
 
 const defaultPermissions = [
@@ -39,12 +41,12 @@ const defaultPermissions = [
     description: "Allows viewing all internal staff members across the system.",
   },
   {
-  code: PERMISSIONS.ACCESS_USER_DETAIL,
-  name: "Access User Detail",
-  category: "USER_MANAGEMENT",
-  description:
-    "Allows viewing detailed information about staff and customers."
-},
+    code: PERMISSIONS.ACCESS_USER_DETAIL,
+    name: "Access User Detail",
+    category: "USER_MANAGEMENT",
+    description:
+      "Allows viewing detailed information about staff and customers."
+  },
   {
     code: PERMISSIONS.CUSTOMER_READ_ALL,
     name: "Read All Customers",
@@ -106,6 +108,12 @@ const defaultPermissions = [
     description: "Allows modifying ticket urgency or priority ratings.",
   },
   {
+    code: PERMISSIONS.CASE_RESOLVE,
+    name: "Resolve Case",
+    category: "CASE_MANAGEMENT",
+    description: "Allows marking a case as resolved with a resolution summary.",
+  },
+  {
     code: PERMISSIONS.CASE_READ_ANALYTICS,
     name: "Read Case Analytics",
     category: "ANALYTICS",
@@ -165,6 +173,12 @@ const defaultPermissions = [
     category: "ORGANIZATION",
     description: "Allows adding and managing partner companies and email domain rules.",
   },
+  {
+    code: PERMISSIONS.TIME_READ_TEAM,
+    name: "Read Team Time Tracking",
+    category: "TIME_TRACKING",
+    description: "Allows viewing detailed individual agent time tracking data and team reports.",
+  },
 ];
 
 const SYSTEM_ADMIN_PERMISSIONS = [
@@ -177,6 +191,7 @@ const SYSTEM_ADMIN_PERMISSIONS = [
   PERMISSIONS.CASE_READ_HIERARCHY,
   PERMISSIONS.CASE_ASSIGN,
   PERMISSIONS.CASE_SET_PRIORITY,
+  PERMISSIONS.CASE_RESOLVE,
   PERMISSIONS.CASE_READ_ANALYTICS,
   PERMISSIONS.STRUCTURE_MANAGE,
   PERMISSIONS.STRUCTURE_READ_ALL,
@@ -187,13 +202,14 @@ const SYSTEM_ADMIN_PERMISSIONS = [
   PERMISSIONS.VIEW_ALL_CASES_METRICS,
   PERMISSIONS.VIEW_ALL_CASES_DETAIL,
   PERMISSIONS.RECEIVE_NEW_CASE,
+  PERMISSIONS.TIME_READ_TEAM,
 ];
 
 async function main() {
   console.log("Starting Database Seeding...");
 
   console.log(`Seeding ${defaultPermissions.length} master permissions...`);
-  const seededPermissionsMap = new Map<string, string>(); 
+  const seededPermissionsMap = new Map<string, string>();
 
   for (const perm of defaultPermissions) {
     const permission = await prisma.permission.upsert({

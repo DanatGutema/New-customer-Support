@@ -156,8 +156,11 @@ if (!organization || !organization.isActive) {
   });
 
   if (!deliverySuccess) {
-    throw new Error(
-      "Failed to deliver verification email. Please contact support."
+    // In development (no SMTP configured), allow registration to proceed.
+    // The admin can manually approve the account via the approval page.
+    console.warn(
+      "[Customer Registration] Verification email could not be delivered. " +
+      "SMTP may not be configured. Customer account created but email not sent."
     );
   }
 

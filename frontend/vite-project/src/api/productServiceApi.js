@@ -4,8 +4,8 @@ import api from "./axios";
 // PRODUCT CATEGORY
 // ==========================
 
-export const getCategories = () =>
-    api.get("/product/categories/getAll");
+export const getCategories = (activeOnly = false) =>
+    api.get("/product/categories/getAll", { params: activeOnly ? { activeOnly: "true" } : {} });
 
 export const getCategory = (id) =>
     api.get(`/product/categories/get/${id}`);
@@ -24,8 +24,8 @@ export const toggleCategoryStatus = (id, isActive) =>
 // PRODUCT SUBCATEGORY
 // ==========================
 
-export const getSubcategories = () =>
-    api.get("/product/subcategories/getAll");
+export const getSubcategories = (activeOnly = false) =>
+    api.get("/product/subcategories/getAll", { params: activeOnly ? { activeOnly: "true" } : {} });
 
 export const getSubcategory = (id) =>
     api.get(`/product/subcategories/get/${id}`);

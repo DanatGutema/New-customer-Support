@@ -95,7 +95,9 @@ export const fetchAllCategories = async (
   next: NextFunction
 ) => {
   try {
-    const result = await CatalogService.getAllCategories();
+    // activeOnly=true hides inactive categories from case-creation dropdowns
+    const activeOnly = req.query.activeOnly === "true";
+    const result = await CatalogService.getAllCategories(activeOnly);
     res.status(200).json({ data: result });
   } catch (error) {
     next(error);
@@ -203,7 +205,8 @@ export const fetchAllSubcategories = async (
   next: NextFunction
 ) => {
   try {
-    const result = await CatalogService.getAllSubcategories();
+    const activeOnly = req.query.activeOnly === "true";
+    const result = await CatalogService.getAllSubcategories(activeOnly);
     res.status(200).json({ data: result });
   } catch (error) {
     next(error);

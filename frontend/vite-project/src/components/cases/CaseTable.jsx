@@ -25,6 +25,8 @@ import {
     ShieldCheck,
 } from "lucide-react";
 
+// import SlaCountdown from "./SlaCountdown"; // SLA DISABLED
+
 
 // ============================================================
 // STATUS CONFIGURATION
@@ -969,6 +971,23 @@ export default function CaseTable({
                             </TableHead>
 
 
+                            {/* SLA column header — DISABLED */}
+                            {/* <TableHead
+                                className="
+                                    min-w-[160px]
+                                    bg-white
+                                    py-4
+                                    text-xs
+                                    font-bold
+                                    uppercase
+                                    tracking-[0.12em]
+                                    text-slate-500
+                                "
+                            >
+                                SLA
+                            </TableHead> */}
+
+
                             <TableHead
                                 className="
                                     min-w-[350px]
@@ -1180,6 +1199,19 @@ export default function CaseTable({
                                             </Badge>
 
                                         </TableCell>
+
+
+                                        {/* SLA cell — DISABLED */}
+                                        {/* <TableCell className="py-5">
+                                            {item.sla ? (
+                                                <SlaCountdown
+                                                    sla={item.sla}
+                                                    compact
+                                                />
+                                            ) : (
+                                                <span className="text-xs text-slate-400">—</span>
+                                            )}
+                                        </TableCell> */}
 
 
                                         {/* =================================

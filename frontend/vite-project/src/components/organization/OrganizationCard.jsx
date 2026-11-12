@@ -4,12 +4,14 @@ import {
     Users,
     ArrowUpRight,
     Power,
+    Pencil,
 } from "lucide-react";
 
 export default function OrganizationCard({
     organization,
     onDeactivate,
     onReactivate,
+    onEdit,
 }) {
     const customerCount =
         organization._count?.customers || 0;
@@ -98,14 +100,26 @@ export default function OrganizationCard({
             ================================================== */}
             <div className="flex items-center justify-between border-t border-slate-100 px-5 py-4">
 
-                <Link
-                    to={`/organizations/${organization.id}`}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
-                >
-                    View Details
+                <div className="flex items-center gap-2">
+                    <Link
+                        to={`/organizations/${organization.id}`}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+                    >
+                        View Details
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                    </Link>
 
-                    <ArrowUpRight className="h-3.5 w-3.5" />
-                </Link>
+                    {onEdit && (
+                        <button
+                            type="button"
+                            onClick={() => onEdit(organization)}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                        >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Edit
+                        </button>
+                    )}
+                </div>
 
                 {isActive ? (
                     <button

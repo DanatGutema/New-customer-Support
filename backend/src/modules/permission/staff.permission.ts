@@ -148,6 +148,14 @@ export const grantPermissions = async (
     });
   }
 
+  // Revoke active refresh tokens so the next request forces a token re-issue
+  // with the updated permissions baked in. This makes the change take effect
+  // immediately without requiring a manual logout/login.
+  await prisma.refreshToken.updateMany({
+    where: { userId: targetStaffId, userType: "STAFF", revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+
   const updatedUser = await getStaffWithPermissions(targetStaffId);
 
   return {
@@ -198,6 +206,12 @@ export const revokePermissions = async (
       staffId: targetStaffId,
       permission: { code: { in: removableCodes } },
     },
+  });
+
+  // Force token refresh on next request
+  await prisma.refreshToken.updateMany({
+    where: { userId: targetStaffId, userType: "STAFF", revokedAt: null },
+    data: { revokedAt: new Date() },
   });
 
   const updatedUser = await getStaffWithPermissions(targetStaffId);
@@ -256,6 +270,12 @@ export const syncPermissions = async (
         skipDuplicates: true,
       });
     }
+  });
+
+  // Force token refresh on next request for the target staff member
+  await prisma.refreshToken.updateMany({
+    where: { userId: targetStaffId, userType: "STAFF", revokedAt: null },
+    data: { revokedAt: new Date() },
   });
 
   const updatedUser = await getStaffWithPermissions(targetStaffId);

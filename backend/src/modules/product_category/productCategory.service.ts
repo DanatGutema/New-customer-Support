@@ -85,14 +85,15 @@ export const setCategoryActiveStatus = async (
   });
 };
 
-export const getAllCategories = async () => {
+export const getAllCategories = async (activeOnly = false) => {
   return await prisma.productCategory.findMany({
+    where: activeOnly ? { isActive: true } : undefined,
     include: {
-      subcategories: true,
+      subcategories: activeOnly
+        ? { where: { isActive: true } }
+        : true,
     },
-    orderBy: {
-      createdAt: "desc",
-    },
+    orderBy: { createdAt: "desc" },
   });
 };
 export const getCategoryById = async (id: string) => {
@@ -189,10 +190,11 @@ export const setSubcategoryActiveStatus = async (
   });
 };
 
-export const getAllSubcategories = async () => {
+export const getAllSubcategories = async (activeOnly = false) => {
   return await prisma.productSubcategory.findMany({
+    where: activeOnly ? { isActive: true, productCategory: { isActive: true } } : undefined,
     include: {
-      productCategory: { select: { id: true, name: true } },
+      productCategory: { select: { id: true, name: true, isActive: true } },
     },
     orderBy: { createdAt: "desc" },
   });

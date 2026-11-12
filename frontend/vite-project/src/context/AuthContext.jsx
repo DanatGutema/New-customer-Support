@@ -19,8 +19,20 @@ export function AuthProvider({ children }) {
         const handleForcedLogout = () => setUser(null);
         window.addEventListener("auth:logout", handleForcedLogout);
 
+        // Silently refresh permissions every 2 minutes so permission changes
+        // granted by an admin take effect without requiring a manual logout.
+        const permissionRefreshInterval = setInterval(async () => {
+            try {
+                const refreshedDecoded = await AuthApi.refresh();
+                setUser((current) => current ? normalizeUser(refreshedDecoded) : null);
+            } catch (_) {
+                // If refresh fails, the interceptor will handle forced logout
+            }
+        }, 2 * 60 * 1000);
+
         return () => {
             window.removeEventListener("auth:logout", handleForcedLogout);
+            clearInterval(permissionRefreshInterval);
         };
     }, []);
 
@@ -99,7 +111,20 @@ export function AuthProvider({ children }) {
                         decoded.exp && decoded.exp * 1000 > Date.now() + 5000;
 
                     if (notExpired) {
+                        // Set user immediately from cached token for fast UI render,
+                        // then silently refresh in background to pick up any permission
+                        // changes (e.g. admin granted/revoked a permission).
                         setUser(normalizeUser(decoded));
+
+                        // Background refresh — updates permissions without blocking UI
+                        try {
+                            const refreshedDecoded = await AuthApi.refresh();
+                            setUser(normalizeUser(refreshedDecoded));
+                        } catch (_refreshErr) {
+                            // Refresh failed (token was revoked) — force logout
+                            localStorage.removeItem("jwt_token");
+                            setUser(null);
+                        }
                         return;
                     }
                 } catch (_) {

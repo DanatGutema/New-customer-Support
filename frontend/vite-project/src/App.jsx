@@ -43,6 +43,8 @@ import ManagerCases from "./pages/manager/ManagerCases";
 import ManagerAssignCase from "./pages/manager/ManagerAssignCase";
 import ManagerReports from "./pages/manager/ManagerReports";
 import ManagerProfile from "./pages/manager/ManagerProfile";
+import ManagerTimeReport from "./pages/manager/ManagerTimeReport";
+import ManagerTimeApprovals from "./pages/manager/ManagerTimeApprovals";
 
 // DIRECTOR
 import DirectorDashboard from "./pages/director/DirectorDashboard";
@@ -59,6 +61,7 @@ import CaseDetail from "./pages/support/CaseDetail";
 import History from "./pages/support/History";
 import FeedbackAnalytics from "./pages/support/FeedbackAnalytics";
 import SupportProfile from "./pages/support/Profile";
+import MyDayPage from "./pages/support/MyDayPage";
 
 // GENERAL
 import DashboardPage from "./pages/DashboardPage";
@@ -222,6 +225,16 @@ element={<ManagerProfile />}
 />
 
 <Route
+path="/manager/time-report"
+element={<ManagerTimeReport />}
+/>
+
+<Route
+path="/manager/time-approvals"
+element={<ManagerTimeApprovals />}
+/>
+
+<Route
     path="/support"
     element={<PSSupportDashboard />}
 />
@@ -249,6 +262,11 @@ element={<ManagerProfile />}
 <Route
     path="/support/profile"
     element={<SupportProfile />}
+  />
+
+  <Route
+    path="/support/my-day"
+    element={<MyDayPage />}
   />
 
 <Route
@@ -491,6 +509,26 @@ element={<AdminFeedbackPage />}
 path="/reports"
 
 element={<ReportsPage />}
+
+/>
+
+
+
+<Route
+
+path="/admin/time-report"
+
+element={<ManagerTimeReport />}
+
+/>
+
+
+
+<Route
+
+path="/admin/time-approvals"
+
+element={<ManagerTimeApprovals />}
 
 />
 

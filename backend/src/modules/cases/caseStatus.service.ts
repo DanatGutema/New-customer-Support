@@ -6,6 +6,7 @@ import { sendStatusUpdateEmail, triggerResolutionEmail, sendStaffCaseUpdateEmail
 import { processCaseNotifications } from "./case.notification";
 import { createStatusHistory } from "./statusHistory.service";
 import { ENV } from "../../config/env";
+import { TimeTrackingService } from "../timeTracking/timeTracking.service";
 
 type Actor = {
   id?: string;
@@ -17,7 +18,7 @@ type Actor = {
   isCustomer?: boolean;
 };
 
-const getCaseUpdateStaffRecipients = async (caseId: string, excludeStaffId?: string): Promise<Array<{id: string, email: string, firstName: string, lastName: string | null}>> => {
+const getCaseUpdateStaffRecipients = async (caseId: string, excludeStaffId?: string): Promise<Array<{ id: string, email: string, firstName: string, lastName: string | null }>> => {
   const targetCase = await prisma.caseReport.findUnique({
     where: { id: caseId },
     include: {
@@ -215,6 +216,15 @@ export async function updateStatus(
     return updatedCase;
   });
 
+  // Close active time tracking session if case transitioned to terminal status
+  if (([CaseStatus.RESOLVED, CaseStatus.CLOSED, CaseStatus.CANCELLED] as CaseStatus[]).includes(newStatus)) {
+    try {
+      await TimeTrackingService.closeRunningSessionsForCase(updated.id, `STATUS_${newStatus}`);
+    } catch (e) {
+      console.error("Error closing time tracking session on terminal status:", e);
+    }
+  }
+
   // Emit events for key transitions
   if (newStatus === CaseStatus.RESOLVED) {
     CaseEventBroker.emit(CASE_EVENTS.RESOLVED, {
@@ -289,12 +299,12 @@ export async function updateStatus(
         ? (targetCase.customer ? `${targetCase.customer.firstName} ${targetCase.customer.lastName || ""}`.trim() : "Customer")
         : "Staff";
     const caseUrl = `${ENV.FRONTEND_URL || "http://localhost:3000"}/cases/${caseId}`;
-    
+
     let updateType: "status_change" | "resolution" | "closure" | "reassignment" | "priority_change" | "escalation" | "note_added" = "status_change";
     if (newStatus === CaseStatus.RESOLVED) updateType = "resolution";
     else if (newStatus === CaseStatus.CLOSED) updateType = "closure";
     else if (newStatus === CaseStatus.ESCALATED) updateType = "escalation";
-    
+
     const updateDetails = opts?.reason || opts?.note || opts?.resolutionSummary || undefined;
 
     for (const staff of staffRecipients) {

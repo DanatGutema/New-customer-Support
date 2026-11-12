@@ -241,18 +241,10 @@ export default function ApprovalPage() {
     permissionCodes
   ) {
     try {
-      if (
-        !Array.isArray(permissionCodes) ||
-        permissionCodes.length === 0
-      ) {
-        alert(
-          "Please select at least one permission."
-        );
-
-        return;
-      }
-
-      await PermissionApi.grant(
+      // Use sync (not grant) so the admin can both add AND remove extra
+      // permissions in one operation. Sync replaces the custom permission
+      // set while always preserving the role's default permissions.
+      await PermissionApi.sync(
         targetStaffId,
         permissionCodes
       );
@@ -262,14 +254,14 @@ export default function ApprovalPage() {
       closePermission();
 
       alert(
-        "Permissions granted successfully."
+        "Permissions updated successfully. The staff member's session will reflect the changes on their next request."
       );
     } catch (error) {
       console.error(error);
 
       alert(
         error?.response?.data?.message ||
-          "Failed to grant permissions."
+          "Failed to update permissions."
       );
     }
   }

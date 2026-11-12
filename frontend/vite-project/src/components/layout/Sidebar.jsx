@@ -12,6 +12,8 @@ import {
     FaPlusCircle,
     FaBell,
     FaLock,
+    FaClock,
+    FaCheckSquare,
 } from "react-icons/fa";
 
 import { useAuth } from "../../context/useAuth";
@@ -63,6 +65,16 @@ const ADMIN_ITEMS = [
         label: "Reports & Analytics",
     },
     {
+        to: "/admin/time-report",
+        icon: FaClock,
+        label: "Time Report",
+    },
+    {
+        to: "/admin/time-approvals",
+        icon: FaCheckSquare,
+        label: "Time Approvals",
+    },
+    {
         to: "/profile",
         icon: FaUserCircle,
         label: "Profile",
@@ -106,6 +118,16 @@ const MANAGER_ITEMS = (user) => [
         to: "/manager/assign-case",
         icon: FaPlusCircle,
         label: "Assign Case",
+    },
+    {
+        to: "/manager/time-report",
+        icon: FaClock,
+        label: "Time Report",
+    },
+    {
+        to: "/manager/time-approvals",
+        icon: FaCheckSquare,
+        label: "Time Approvals",
     },
     {
         to: "/manager/reports",
@@ -170,6 +192,11 @@ const PS_SUPPORT_ITEMS = [
         to: "/support/cases",
         icon: FaClipboardList,
         label: "My Assigned Cases",
+    },
+    {
+        to: "/support/my-day",
+        icon: FaClock,
+        label: "My Day",
     },
     {
         to: "/support/history",

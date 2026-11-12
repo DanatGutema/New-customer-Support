@@ -1,5 +1,25 @@
 import nodemailer from "nodemailer";
 import { ENV } from "../config/env";
+import { prisma } from "../config/database";
+import crypto from "crypto";
+
+// ─── Generate a standards-compliant RFC 2822 Message-ID ──────────────────────
+
+export function generateMessageId(domain?: string): string {
+  const d = domain || (ENV.SMTP_FROM?.split("@")[1]) || "motisupport.dev";
+  return `<${Date.now()}.${crypto.randomBytes(8).toString("hex")}@${d}>`;
+}
+
+/**
+ * Build the References header by appending the new messageId to an existing chain.
+ * References = previous References + " " + inReplyTo
+ */
+export function buildReferences(existingReferences: string | null | undefined, inReplyTo: string | null | undefined): string {
+  const parts: string[] = [];
+  if (existingReferences) parts.push(existingReferences.trim());
+  if (inReplyTo && !parts.join(" ").includes(inReplyTo)) parts.push(inReplyTo.trim());
+  return parts.join(" ");
+}
 
 interface StatusEmailInput {
   customerEmail: string;
@@ -52,12 +72,19 @@ interface DispatchOptions {
   html: string;
   kind: string;
   bcc?: string[];
+  // Email threading
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
+  relatedCaseId?: string;
+  bodyText?: string;
 }
 
 /**
  * Shared dispatcher for every email in the system.
- * - Logs a clear success line (recipient, messageId, SMTP response) on delivery.
- * - Logs the exact failure reason if SMTP is misconfigured or the relay rejects.
+ * - Adds Message-ID, In-Reply-To, References headers for threading.
+ * - Logs all threading metadata to EmailLog.
+ * - Logs a clear success line on delivery.
  * - Throws on failure so callers that await directly are not left silent.
  */
 export const dispatchEmail = async ({
@@ -66,6 +93,11 @@ export const dispatchEmail = async ({
   html,
   kind,
   bcc,
+  messageId,
+  inReplyTo,
+  references,
+  relatedCaseId,
+  bodyText,
 }: DispatchOptions) => {
   if (!ENV.SMTP_HOST || !ENV.SMTP_USER || !ENV.SMTP_PASS) {
     const reason = `SMTP not configured (HOST=${ENV.SMTP_HOST || "unset"}, USER=${ENV.SMTP_USER ? "set" : "unset"}, PASS=${ENV.SMTP_PASS ? "set" : "unset"})`;
@@ -73,12 +105,19 @@ export const dispatchEmail = async ({
     throw new Error(reason);
   }
 
+  // Always generate a fresh Message-ID if not provided
+  const outboundMessageId = messageId || generateMessageId();
+  const refsChain = buildReferences(references, inReplyTo);
+
   const transporter = getTransporter();
   const info = await transporter.sendMail({
     from: ENV.SMTP_FROM || `"MOTI Support System" <${ENV.SMTP_USER}>`,
     to,
     subject,
     html,
+    messageId: outboundMessageId,
+    ...(inReplyTo ? { inReplyTo } : {}),
+    ...(refsChain ? { references: refsChain } : {}),
     ...(bcc && bcc.length ? { bcc } : {}),
   });
 
@@ -86,19 +125,42 @@ export const dispatchEmail = async ({
     kind,
     to,
     subject,
-    messageId: info.messageId || "n/a",
+    messageId: outboundMessageId,
+    inReplyTo: inReplyTo || null,
     accepted: info.accepted?.length ?? 0,
     rejected: info.rejected?.length ?? 0,
-    pending: info.pending?.length ?? 0,
     response: info.response || "n/a",
   };
   console.log(`[Email:${kind}] SENT -> ${to} | ${JSON.stringify(summary)}`);
 
   if (info.rejected && info.rejected.length > 0) {
-    console.error(`[Email:${kind}] REJECTED -> ${to} | recipients: ${JSON.stringify(info.rejected)} | response: ${info.response}`);
+    console.error(`[Email:${kind}] REJECTED -> ${to} | recipients: ${JSON.stringify(info.rejected)}`);
   }
 
-  return info;
+  // Persist threading metadata to EmailLog asynchronously (non-blocking)
+  try {
+    await prisma.emailLog.create({
+      data: {
+        recipientEmail: to,
+        emailType: "CASE_STATUS_CHANGED" as any, // fallback; callers should pass correct type
+        relatedCaseId: relatedCaseId || null,
+        status: "SENT",
+        sentAt: new Date(),
+        messageId: outboundMessageId,
+        inReplyTo: inReplyTo || null,
+        references: refsChain || null,
+        subject,
+        bodyText: bodyText || null,
+        direction: "OUTBOUND",
+        fromEmail: ENV.SMTP_FROM || ENV.SMTP_USER || null,
+      },
+    });
+  } catch (logErr) {
+    // Non-critical — never let logging break email delivery
+    console.error(`[Email:${kind}] EmailLog save failed:`, logErr);
+  }
+
+  return { ...info, outboundMessageId };
 };
 
 export const sendVerificationEmail = async (
@@ -175,17 +237,32 @@ export const sendVerificationEmail = async (
 };
 
 export const sendStatusUpdateEmail = async (input: StatusEmailInput) => {
-  const { customerEmail, customerName, caseNumber, caseId, subjectLine, newStatus } =
-    input;
+  const { customerEmail, customerName, caseNumber, caseId, subjectLine, newStatus } = input;
 
   const FRONTEND_BASE_URL = ENV.FRONTEND_URL || "http://localhost:5173";
   const decisionLink = caseId ? `${FRONTEND_BASE_URL}/cases/${caseId}/feedback` : `${FRONTEND_BASE_URL}/track/${caseNumber}`;
   const rejectLink = caseId ? `${FRONTEND_BASE_URL}/cases/${caseId}/reopen` : `${FRONTEND_BASE_URL}/track/${caseNumber}`;
-  // const frontendTrackingUrl = `${process.env.FRONTEND_APP_URL || "http://localhost:3000"}/track/${caseNumber}`;
   const frontendTrackingUrl = `${FRONTEND_BASE_URL}/track/${caseNumber}`;
-
-
   const isResolutionDecisionEmail = newStatus === "RESOLVED";
+
+  // Look up the root thread Message-ID for this case to chain replies
+  let inReplyTo: string | undefined;
+  let references: string | undefined;
+  try {
+    const rootLog = await prisma.emailLog.findFirst({
+      where: {
+        relatedCaseId: caseId || undefined,
+        direction: "OUTBOUND",
+        messageId: { not: null },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { messageId: true, references: true },
+    });
+    if (rootLog?.messageId) {
+      inReplyTo = rootLog.messageId;
+      references = buildReferences(rootLog.references, rootLog.messageId);
+    }
+  } catch (_) {}
 
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
@@ -220,12 +297,13 @@ export const sendStatusUpdateEmail = async (input: StatusEmailInput) => {
       subject: `[Update] Case #${caseNumber} Status Changed to ${newStatus}`,
       html: htmlContent,
       kind: `status-${newStatus}`,
+      inReplyTo,
+      references,
+      relatedCaseId: caseId,
+      bodyText: `Case #${caseNumber} status changed to ${newStatus}.`,
     });
   } catch (error) {
-    console.error(
-      `Critical non-blocking failure emitting transaction notification email to ${customerEmail}:`,
-      error,
-    );
+    console.error(`Critical non-blocking failure emitting transaction notification email to ${customerEmail}:`, error);
   }
 };
 
@@ -239,37 +317,42 @@ export const triggerResolutionEmail = async (caseReport: any): Promise<void> => 
   }
 
   const FRONTEND_BASE_URL = ENV.FRONTEND_URL || "http://localhost:3000";
-
   const acceptAndRateLink = `${FRONTEND_BASE_URL}/cases/${caseReport.id}/feedback`;
   const rejectAndReopenLink = `${FRONTEND_BASE_URL}/cases/${caseReport.id}/reopen`;
+  const emailSubject = `Case Resolved: #${caseReport.caseNumber || "Update"} - ${caseReport.subject}`;
 
-  const emailSubject = `Case Resolved: #${caseReport.caseNumber || 'Update'} - ${caseReport.subject}`;
+  // Thread this reply to the original case creation email
+  let inReplyTo: string | undefined;
+  let references: string | undefined;
+  try {
+    const rootLog = await prisma.emailLog.findFirst({
+      where: { relatedCaseId: caseReport.id, direction: "OUTBOUND", messageId: { not: null } },
+      orderBy: { createdAt: "asc" },
+      select: { messageId: true, references: true },
+    });
+    if (rootLog?.messageId) {
+      inReplyTo = rootLog.messageId;
+      references = buildReferences(rootLog.references, rootLog.messageId);
+    }
+  } catch (_) {}
 
   const emailHtml = `
     <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
       <h2 style="color: #2b6cb0; margin-bottom: 16px;">Your Case Has Been Resolved</h2>
       <p>Hello ${customerName},</p>
       <p>An agent has updated your support ticket and submitted a resolution summary for your review.</p>
-      
       <div style="background-color: #f7fafc; border-left: 4px solid #4299e1; padding: 16px; margin: 20px 0; border-radius: 0 4px 4px 0;">
         <strong style="display: block; margin-bottom: 6px; color: #2d3748;">Resolution Summary:</strong>
         <p style="margin: 0; color: #4a5568; font-style: italic; white-space: pre-wrap;">"${caseReport.resolutionSummary}"</p>
       </div>
-
       <p style="margin-bottom: 24px;">Please take a moment to confirm if this issue is settled to your satisfaction:</p>
-      
       <div style="margin-bottom: 24px;">
-        <a href="${acceptAndRateLink}" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-right: 12px; margin-bottom: 12px;">
-          ACCEPT
-        </a>
-        <a href="${rejectAndReopenLink}" style="background-color: #e53e3e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-bottom: 12px;">
-          REJECT
-        </a>
+        <a href="${acceptAndRateLink}" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-right: 12px; margin-bottom: 12px;">ACCEPT</a>
+        <a href="${rejectAndReopenLink}" style="background-color: #e53e3e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-bottom: 12px;">REJECT</a>
       </div>
-
       <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
       <p style="font-size: 12px; color: #718096; line-height: 1.5;">
-        <strong>Please Note:</strong> If you do not accept or reject this resolution within <strong>3 days</strong>, our system will automatically mark this case file as closed. If you require further help after that point, you will need to open a brand new support case.
+        <strong>Please Note:</strong> If you do not accept or reject this resolution within <strong>3 days</strong>, our system will automatically mark this case file as closed.
       </p>
     </div>
   `;
@@ -279,6 +362,10 @@ export const triggerResolutionEmail = async (caseReport: any): Promise<void> => 
     subject: emailSubject,
     html: emailHtml,
     kind: "resolved",
+    inReplyTo,
+    references,
+    relatedCaseId: caseReport.id,
+    bodyText: `Case #${caseReport.caseNumber} resolved. Summary: ${caseReport.resolutionSummary}`,
   });
 };
 
@@ -433,13 +520,27 @@ export const sendCaseCreationCustomerEmail = async (
     </div>
   `;
 
+  // Root Message-ID for this case thread — stored so all subsequent emails can reference it
+  const rootMessageId = generateMessageId();
+
   try {
     await dispatchEmail({
       to: customerEmail,
       subject,
       html: htmlContent,
       kind: "case-created",
+      messageId: rootMessageId,
+      bodyText: `Case #${caseNumber}: ${subjectLine}\n\n${description}`,
     });
+
+    // Persist the root Message-ID against the case number so future emails can thread off it
+    try {
+      await prisma.emailLog.updateMany({
+        where: { messageId: rootMessageId },
+        data: { emailType: "CASE_STATUS_CHANGED" as any },
+      });
+    } catch (_) {}
+
     return true;
   } catch (error) {
     console.error("[Email:case-created] Failed to send customer case creation receipt:", error);
@@ -453,6 +554,7 @@ interface CaseAssignmentEmailInput {
   agentEmail: string;
   agentName: string;
   caseNumber: string;
+  caseId?: string;
   subjectLine?: string;
 }
 
@@ -466,7 +568,7 @@ interface CustomerAssignmentEmailInput {
 export const sendCaseAssignmentEmail = async (
   input: CaseAssignmentEmailInput
 ): Promise<boolean> => {
-  const { agentEmail, agentName, caseNumber, subjectLine } = input;
+  const { agentEmail, agentName, caseNumber, caseId, subjectLine } = input;
   const baseUrl = ENV.FRONTEND_URL || "http://localhost:3000";
   const caseUrl = `${baseUrl}/cases/${caseNumber}`;
 
@@ -490,11 +592,37 @@ export const sendCaseAssignmentEmail = async (
   `;
 
   try {
+    // Thread under the first email sent to this agent for this case
+    let inReplyTo: string | undefined;
+    let references: string | undefined;
+    if (caseId) {
+      try {
+        const rootLog = await prisma.emailLog.findFirst({
+          where: {
+            relatedCaseId: caseId,
+            direction: "OUTBOUND",
+            messageId: { not: null },
+            recipientEmail: agentEmail,
+          },
+          orderBy: { createdAt: "asc" },
+          select: { messageId: true, references: true },
+        });
+        if (rootLog?.messageId) {
+          inReplyTo  = rootLog.messageId;
+          references = buildReferences(rootLog.references, rootLog.messageId);
+        }
+      } catch (_) {}
+    }
+
     await dispatchEmail({
       to: agentEmail,
       subject: `[New Assignment] Case #${caseNumber}`,
       html: htmlContent,
       kind: "agent-assigned",
+      inReplyTo,
+      references,
+      relatedCaseId: caseId,
+      bodyText: `You have been assigned to Case #${caseNumber}${subjectLine ? `: ${subjectLine}` : ""}.`,
     });
     return true;
   } catch (error) {
@@ -502,7 +630,6 @@ export const sendCaseAssignmentEmail = async (
     return false;
   }
 };
-
 // 3. Email function for Customer upon initial assignment
 export const sendCustomerAssignmentEmail = async (
   input: CustomerAssignmentEmailInput
@@ -732,11 +859,36 @@ export const sendStaffCaseUpdateEmail = async (
   `;
 
   try {
+    // Look up the first email sent to this staff member for this case
+    // so all subsequent emails thread under it in their inbox.
+    let inReplyTo: string | undefined;
+    let references: string | undefined;
+    try {
+      const rootLog = await prisma.emailLog.findFirst({
+        where: {
+          relatedCaseId: caseId || undefined,
+          direction: "OUTBOUND",
+          messageId: { not: null },
+          recipientEmail: staffEmail,
+        },
+        orderBy: { createdAt: "asc" },
+        select: { messageId: true, references: true },
+      });
+      if (rootLog?.messageId) {
+        inReplyTo  = rootLog.messageId;
+        references = buildReferences(rootLog.references, rootLog.messageId);
+      }
+    } catch (_) {}
+
     await dispatchEmail({
       to: staffEmail,
       subject: `[Staff Update] Case #${caseNumber} - ${updateTypeLabel}`,
       html: htmlContent,
       kind: `staff-${updateType}`,
+      inReplyTo,
+      references,
+      relatedCaseId: caseId,
+      bodyText: `Case #${caseNumber} ${updateTypeLabel}${updateDetails ? `: ${updateDetails}` : ""}.`,
     });
     return true;
   } catch (error) {

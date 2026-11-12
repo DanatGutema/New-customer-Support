@@ -60,8 +60,8 @@ function ManagerOpenCaseModal({ open, onClose, onSubmitted }) {
     const loadData = async () => {
       try {
         const [catResponse, subResponse, serviceResponse] = await Promise.all([
-          getCategories(),
-          getSubcategories(),
+          getCategories(true),   // activeOnly — deactivated categories hidden
+          getSubcategories(true),
           getServiceTypes(),
         ]);
 

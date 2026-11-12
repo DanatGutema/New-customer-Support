@@ -32,6 +32,8 @@ export default function CategoryModal({ close, refresh }) {
             return;
         }
 
+        if (loading) return; // prevent double submission
+
         try {
             setLoading(true);
             setError("");

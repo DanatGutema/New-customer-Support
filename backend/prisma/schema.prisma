@@ -72,6 +72,8 @@ enum NotificationType {
   CASE_IN_PROGRESS
   CASE_PRIORITY_CHANGED
   SIGNIN_HELP_REQUEST
+  SLA_WARNING
+  SLA_BREACHED
 }
 
 enum EmailType {
@@ -94,6 +96,27 @@ enum EmailStatus {
 enum Gender {
   MALE
   FEMALE
+}
+
+enum WorkSessionSource {
+  AUTO
+  TIMER
+  MANUAL
+}
+
+enum WorkType {
+  DESK
+  PHONE
+  SITE_VISIT
+  HARDWARE_REPAIR
+  TRAVEL
+}
+
+enum WorkSessionApprovalStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model Department {
@@ -232,6 +255,9 @@ model Staff {
   approvedCustomers         Customer[]           @relation("CustomerApprover")
 
   staffPermissions StaffPermission[]
+  caseMessages     CaseMessage[]    @relation("MessageAuthorStaff")
+  workSessions     CaseWorkSession[] @relation("StaffWorkSessions")
+  sessionAudits    CaseWorkSessionAudit[] @relation("StaffSessionAudits")
 
   @@map("staffs")
 }
@@ -289,6 +315,7 @@ model Customer {
   cases               CaseReport[]
   approvedById        String?
   approvedBy          Staff?       @relation("CustomerApprover", fields: [approvedById], references: [id])
+  caseMessages        CaseMessage[] @relation("MessageAuthorCustomer")
 
   @@map("customers")
 }
@@ -433,10 +460,15 @@ model CaseReport {
   updatedById          String?
   updatedBy            Staff?              @relation("CaseReportUpdatedBy", fields: [updatedById], references: [id])
 
+  totalActiveSeconds   Int                 @default(0)
+
   statusHistory CaseStatusHistory[]
   attachments   Attachment[]
   feedback      Feedback?
   notifications Notification[]
+  slaBreachLogs SlaBreachLog[]
+  messages      CaseMessage[]
+  workSessions  CaseWorkSession[]
 
   @@map("case_report")
 }
@@ -522,5 +554,121 @@ model EmailLog {
   sentAt         DateTime?
   createdAt      DateTime    @default(now())
 
+  // Email threading headers
+  messageId      String?     @unique @db.VarChar(500) // RFC 2822 Message-ID
+  inReplyTo      String?     @db.VarChar(500)         // Message-ID this replies to
+  references     String?     @db.Text                 // Full References chain
+  subject        String?     @db.VarChar(500)
+  bodyText       String?     @db.Text                 // Plain-text body snapshot
+  direction      String      @default("OUTBOUND") @db.VarChar(10) // OUTBOUND | INBOUND
+  fromEmail      String?     @db.VarChar(255)
+
   @@map("email_logs")
+}
+
+model SlaBreachLog {
+  id           String     @id @default(uuid())
+  caseReportId String
+  caseReport   CaseReport @relation(fields: [caseReportId], references: [id], onDelete: Cascade)
+  breachType   String     @db.VarChar(20)  // "WARNING" | "BREACHED"
+  priority     String     @db.VarChar(20)
+  elapsedMs    Int
+  targetMs     Int
+  notifiedAt   DateTime   @default(now())
+
+  @@unique([caseReportId, breachType])
+  @@map("sla_breach_logs")
+}
+
+// ─── Conversation thread ────────────────────────────────────────────────────
+
+enum MessageVisibility {
+  PUBLIC    // visible to customer + staff
+  INTERNAL  // staff-only (internal note)
+}
+
+model CaseMessage {
+  id           String            @id @default(uuid())
+  caseReportId String
+  caseReport   CaseReport        @relation(fields: [caseReportId], references: [id], onDelete: Cascade)
+
+  // Author — exactly one of these is set
+  authorStaffId    String?
+  authorStaff      Staff?    @relation("MessageAuthorStaff", fields: [authorStaffId], references: [id])
+  authorCustomerId String?
+  authorCustomer   Customer? @relation("MessageAuthorCustomer", fields: [authorCustomerId], references: [id])
+
+  body         String            @db.Text
+  visibility   MessageVisibility @default(PUBLIC)
+  isEdited     Boolean           @default(false)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  attachments  MessageAttachment[]
+
+  @@map("case_messages")
+}
+
+model MessageAttachment {
+  id          String      @id @default(uuid())
+  messageId   String
+  message     CaseMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileName    String      @db.VarChar(255)
+  storagePath String      @db.VarChar(500)
+  fileSizeBytes BigInt
+  mimeType    String      @db.VarChar(100)
+  uploadedAt  DateTime    @default(now())
+
+  @@map("message_attachments")
+}
+
+model CannedReply {
+  id        String   @id @default(uuid())
+  title     String   @db.VarChar(150)
+  body      String   @db.Text
+  category  String?  @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("canned_replies")
+}
+
+model CaseWorkSession {
+  id              String                    @id @default(uuid())
+  caseId          String
+  case            CaseReport                @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  staffId         String
+  staff           Staff                     @relation("StaffWorkSessions", fields: [staffId], references: [id], onDelete: Cascade)
+  startedAt       DateTime
+  lastHeartbeatAt DateTime
+  endedAt         DateTime?
+  activeSeconds   Int                       @default(0)
+  source          WorkSessionSource
+  workType        WorkType                  @default(DESK)
+  endReason       String?                   @db.VarChar(255)
+  note            String?                   @db.Text
+  approvalStatus  WorkSessionApprovalStatus @default(NOT_REQUIRED)
+  createdAt       DateTime                  @default(now())
+
+  audits          CaseWorkSessionAudit[]
+
+  @@index([caseId])
+  @@index([staffId, startedAt])
+  @@map("case_work_sessions")
+}
+
+model CaseWorkSessionAudit {
+  id         String          @id @default(uuid())
+  sessionId  String
+  session    CaseWorkSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  editedById String
+  editedBy   Staff           @relation("StaffSessionAudits", fields: [editedById], references: [id])
+  field      String          @db.VarChar(100)
+  oldValue   String?         @db.Text
+  newValue   String?         @db.Text
+  reason     String          @db.Text
+  createdAt  DateTime        @default(now())
+
+  @@map("case_work_session_audits")
 }

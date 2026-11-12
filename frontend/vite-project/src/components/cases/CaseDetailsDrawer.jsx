@@ -25,6 +25,7 @@ import {
 } from "react-icons/fa";
 
 import { useAuth } from "../../context/useAuth";
+import { usePermission } from "../../hooks/usePermission";
 
 import caseApi, {
     getCase,
@@ -33,7 +34,12 @@ import caseApi, {
 import PutOnPendingModal from "./PutOnPendingModal";
 import EscalateModal from "./EscalateModal";
 import CancelCaseModal from "./CancelCaseModal";
+import ReassignStaffModal from "./ReassignStaffModal";
 import CaseTimeline from "./CaseTimeline";
+import SlaCountdown from "./SlaCountdown";
+import CaseThread from "./CaseThread";
+import EmailThread from "./EmailThread";
+import ResolveCaseModal from "./ResolveCaseModal";
 
 
 /*
@@ -315,8 +321,18 @@ export default function CaseDetailsDrawer({
     ] = useState(false);
 
     const [
+        showResolveModal,
+        setShowResolveModal,
+    ] = useState(false);
+
+    const [
         showMoreActions,
         setShowMoreActions,
+    ] = useState(false);
+
+    const [
+        showReassignModal,
+        setShowReassignModal,
     ] = useState(false);
 
 
@@ -329,18 +345,17 @@ export default function CaseDetailsDrawer({
     const resolveUserRole = (account) => {
         if (!account) return "customer";
 
-        if (account.role) {
-            return String(account.role).toLowerCase();
-        }
+        // Normalize any role format to lowercase simple key
+        const raw = String(account.role || account.userType || "").toLowerCase();
 
-        if (account.isSAdmin) return "admin";
-        if (account.isManager) return "manager";
-        if (account.isPSsupport) return "agent";
-        if (account.isDirector) return "director";
+        // Map all known role variants
+        if (raw === "system_admin" || raw === "sadmin" || account.isSAdmin) return "admin";
+        if (raw === "manager" || account.isManager || account.managerType) return "manager";
+        if (raw === "ps_support" || raw === "support" || account.isPSsupport) return "agent";
+        if (raw === "director" || account.isDirector) return "director";
 
-        return String(
-            account.partyType || "customer"
-        ).toLowerCase();
+        // Fallback: partyType-based
+        return String(account.partyType || "customer").toLowerCase();
     };
 
 
@@ -354,6 +369,14 @@ export default function CaseDetailsDrawer({
     ].includes(userRole);
 
     const isAdmin = userRole === "admin";
+
+    // Permission-based flags — read from JWT permissions array.
+    // These work for ANY role that has been granted the permission, not just managers.
+    const canAssignCases   = usePermission("CASE_ASSIGN");
+    const canResolveCases  = usePermission("CASE_RESOLVE");
+    const canSetPriority   = usePermission("CASE_SET_PRIORITY");
+    const canReadAllCases  = usePermission("CASE_READ_ALL", "CASE_READ_HIERARCHY");
+    const canViewAllDetail = usePermission("VIEW_ALL_CASES_DETAIL");
 
     const isCustomer = userRole === "customer";
 
@@ -623,6 +646,28 @@ export default function CaseDetailsDrawer({
                 className:
                     "bg-orange-500 text-white hover:bg-orange-600",
             });
+
+            if (canResolveCases) {
+                primaryActions.push({
+                    label: "Resolve",
+                    icon: FaCheckCircle,
+                    onClick: () =>
+                        setShowResolveModal(true),
+                    className:
+                        "bg-emerald-600 text-white hover:bg-emerald-700",
+                });
+            }
+
+            if (canAssignCases) {
+                primaryActions.push({
+                    label: "Reassign",
+                    icon: FaRedo,
+                    onClick: () =>
+                        setShowReassignModal(true),
+                    className:
+                        "bg-blue-600 text-white hover:bg-blue-700",
+                });
+            }
         }
     }
 
@@ -640,6 +685,17 @@ export default function CaseDetailsDrawer({
             className:
                 "bg-emerald-600 text-white hover:bg-emerald-700",
         });
+
+        if (currentStatus === "ESCALATED" && canResolveCases) {
+            primaryActions.push({
+                label: "Resolve",
+                icon: FaCheckCircle,
+                onClick: () =>
+                    setShowResolveModal(true),
+                className:
+                    "bg-blue-600 text-white hover:bg-blue-700",
+            });
+        }
     }
 
 
@@ -1252,6 +1308,22 @@ export default function CaseDetailsDrawer({
                                 </div>
                                 )}
 
+                                {/* SLA */}
+
+                                {!isCustomer && fullCase?.sla && (
+                                <div className="bg-white p-5">
+
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                                            SLA
+                                        </p>
+                                    </div>
+
+                                    <SlaCountdown sla={fullCase.sla} />
+
+                                </div>
+                                )}
+
 
                                 {/* Created */}
 
@@ -1424,6 +1496,22 @@ export default function CaseDetailsDrawer({
 
 
                         {/* =================================================
+                            THREAD
+                        ================================================== */}
+
+                        <CaseThread
+                            caseId={fullCase.id}
+                            initialMessages={fullCase.messages || []}
+                            readOnly={["CLOSED", "CANCELLED"].includes(currentStatus)}
+                        />
+
+                        {/* =================================================
+                            EMAIL THREAD
+                        ================================================== */}
+
+                        <EmailThread caseId={fullCase.id} />
+
+                        {/* =================================================
                             TIMELINE
                         ================================================== */}
 
@@ -1540,6 +1628,28 @@ export default function CaseDetailsDrawer({
                     }
                     onSuccess={refreshCase}
                     api={caseApi}
+                />
+            )}
+
+            {showResolveModal && fullCase && (
+                <ResolveCaseModal
+                    caseData={fullCase}
+                    close={() => setShowResolveModal(false)}
+                    refresh={async () => {
+                        setShowResolveModal(false);
+                        await refreshCase();
+                    }}
+                />
+            )}
+
+            {showReassignModal && fullCase && (
+                <ReassignStaffModal
+                    caseData={fullCase}
+                    close={() => setShowReassignModal(false)}
+                    refresh={async () => {
+                        setShowReassignModal(false);
+                        await refreshCase();
+                    }}
                 />
             )}
 
