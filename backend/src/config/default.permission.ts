@@ -26,14 +26,16 @@ export const PERMISSIONS = {
   SERVICE_MANAGE: "SERVICE_MANAGE",
   ORGANIZATION_MANAGE: "ORGANIZATION_MANAGE",
 
-  PRODUCT_MANAGE: "PRODUCT_MANAGE",
-  PRODUCT_READ_ALL: "PRODUCT_READ_ALL",
-
   TIME_READ_TEAM: "TIME_READ_TEAM",
 } as const;
 
 export const LEGACY_PERMISSION_ALIASES: Record<string, string> = {
   CASE_READ_OWN_ANALTICS: PERMISSIONS.CASE_READ_OWN_ANALYTICS,
+  // These codes appeared in old route guards but were never seeded to DB.
+  // Map them to SERVICE_MANAGE so any token or DB row using them still resolves.
+  PRODUCT_MANAGER:  PERMISSIONS.SERVICE_MANAGE,
+  PRODUCT_MANAGE:   PERMISSIONS.SERVICE_MANAGE,
+  PRODUCT_READ_ALL: PERMISSIONS.SERVICE_MANAGE,
 };
 
 export const normalizePermissionCode = (code?: string | { code?: string } | null): string => {

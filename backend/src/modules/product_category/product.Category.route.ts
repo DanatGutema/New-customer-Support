@@ -11,17 +11,17 @@ router.get(
   "/categories/getAll",
   category.fetchAllCategories
 );
-router.get("/categories/get/:id",requirePermission("PRODUCT_READ_ALL"),  category.fetchCategoryById);
+router.get("/categories/get/:id",requirePermission("SERVICE_MANAGE"),  category.fetchCategoryById);
 router.post(
-  "/categories/create", requirePermission("PRODUCT_MANAGER"),
+  "/categories/create", requirePermission("SERVICE_MANAGE"),
   category.createCategory,
 );
 router.patch(
-  "/categories/update/:id", requirePermission("PRODUCT_MANAGER"),
+  "/categories/update/:id", requirePermission("SERVICE_MANAGE"),
   category.updateCategory,
 );
 router.patch(
-  "/categories/:id/status",requirePermission("PRODUCT_MANAGER"),
+  "/categories/:id/status",requirePermission("SERVICE_MANAGE"),
   category.toggleCategoryActive,
 );
 
@@ -29,17 +29,17 @@ router.get(
   "/subcategories/getAll",
   category.fetchAllSubcategories
 );
-router.get("/subcategories/get/:id",requirePermission("PRODUCT_READ_ALL"),  category.fetchSubcategoryById);
+router.get("/subcategories/get/:id",requirePermission("SERVICE_MANAGE"),  category.fetchSubcategoryById);
 router.post(
-  "/subcategories/create", requirePermission("PRODUCT_MANAGER"),
+  "/subcategories/create", requirePermission("SERVICE_MANAGE"),
   category.createSubcategory,
 );
 router.patch(
-  "/subcategories/update/:id", requirePermission("PRODUCT_MANAGER"),
+  "/subcategories/update/:id", requirePermission("SERVICE_MANAGE"),
   category.updateSubcategory,
 );
 router.patch(
-  "/subcategories/:id/status", requirePermission("PRODUCT_MANAGER"),
+  "/subcategories/:id/status", requirePermission("SERVICE_MANAGE"),
   category.toggleSubcategoryActive,
 );
 

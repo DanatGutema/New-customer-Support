@@ -191,82 +191,82 @@ element={<DashboardPage />}
 
 <Route
 path="/manager/dashboard"
-element={<ManagerDashboard />}
+element={<ProtectedRoute roles={["MANAGER"]}><ManagerDashboard /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/organization"
-element={<ManagerOrganization />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["STRUCTURE_READ_OWN","STRUCTURE_READ_ALL","STRUCTURE_MANAGE"]}><ManagerOrganization /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/staff"
-element={<ManagerStaff />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["STAFF_READ_ALL","ACCESS_USER_DETAIL"]}><ManagerStaff /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/cases"
-element={<ManagerCases />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["CASE_READ_HIERARCHY","CASE_READ_ALL"]}><ManagerCases /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/assign-case"
-element={<ManagerAssignCase />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["CASE_ASSIGN"]}><ManagerAssignCase /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/reports"
-element={<ManagerReports />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["CASE_READ_OWN_ANALYTICS","CASE_READ_ANALYTICS"]}><ManagerReports /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/profile"
-element={<ManagerProfile />}
+element={<ProtectedRoute roles={["MANAGER","PS_SUPPORT","DIRECTOR"]}><ManagerProfile /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/time-report"
-element={<ManagerTimeReport />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["TIME_READ_TEAM"]}><ManagerTimeReport /></ProtectedRoute>}
 />
 
 <Route
 path="/manager/time-approvals"
-element={<ManagerTimeApprovals />}
+element={<ProtectedRoute roles={["MANAGER"]} permissions={["TIME_READ_TEAM"]}><ManagerTimeApprovals /></ProtectedRoute>}
 />
 
 <Route
     path="/support"
-    element={<PSSupportDashboard />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]}><PSSupportDashboard /></ProtectedRoute>}
 />
 
 <Route
     path="/support/cases"
-    element={<AssignedCases />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]}><AssignedCases /></ProtectedRoute>}
 />
 
 <Route
     path="/support/case/:id"
-    element={<CaseDetail />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]} permissions={["CASE_READ_HIERARCHY","CASE_READ_ALL"]}><CaseDetail /></ProtectedRoute>}
 />
 
 <Route
     path="/support/history"
-    element={<History />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]}><History /></ProtectedRoute>}
   />
 
 <Route
     path="/support/feedback"
-    element={<FeedbackAnalytics />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]}><FeedbackAnalytics /></ProtectedRoute>}
   />
 
 <Route
     path="/support/profile"
-    element={<SupportProfile />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]}><SupportProfile /></ProtectedRoute>}
   />
 
   <Route
     path="/support/my-day"
-    element={<MyDayPage />}
+    element={<ProtectedRoute roles={["PS_SUPPORT"]}><MyDayPage /></ProtectedRoute>}
   />
 
 <Route
@@ -391,159 +391,36 @@ element={<CaseDetails />}
 
 
 
-{/* ================= SYSTEM ADMIN ================= */}
-
-
+{/* ================= SYSTEM ADMIN (+ permission-based access) ================= */}
 
 <Route
-
-
-element={
-
-<ProtectedRoute roles={["SYSTEM_ADMIN"]}>
-
-<AppLayout />
-
-</ProtectedRoute>
-
-
-}
-
-
+  element={
+    <ProtectedRoute
+      roles={["SYSTEM_ADMIN"]}
+      permissions={[
+        "CASE_READ_ALL", "ORGANIZATION_MANAGE", "STRUCTURE_MANAGE",
+        "STRUCTURE_READ_ALL", "SERVICE_MANAGE", "PERMISSION_DELEGATE",
+        "CASE_READ_ANALYTICS", "VIEW_ALL_CASES_METRICS", "VIEW_ALL_CASES_DETAIL",
+        "TIME_READ_TEAM", "STAFF_READ_ALL", "ACCESS_USER_DETAIL",
+      ]}
+    >
+      <AppLayout />
+    </ProtectedRoute>
+  }
 >
-
-
-
-<Route
-
-path="/admin/approval"
-
-element={<ApprovalPage />}
-
-/>
-
-
-
-<Route
-
-path="/admin/cases"
-
-element={<CaseTrackingPage />}
-
-/>
-
-
-
-<Route
-
-path="/admin/cases/:id"
-
-element={<CaseTrackingPage />}
-
-/>
-
-
-
-<Route
-
-path="/admin/department-management"
-
-element={<DepartmentManagementPage />}
-
-/>
-
-
-
-<Route
-
-path="/admin/product-service"
-
-element={<ProductService />}
-
-/>
-
-
-
-<Route
-
-path="/organizations"
-
-element={<OrganizationPage />}
-
-/>
-
-
-
-<Route
-
-path="/organizations/:id"
-
-element={<OrganizationDetailsPage />}
-
-/>
-
-
-
-<Route
-
-path="/admin/organizations/:id"
-
-element={<OrganizationDetailsPage />}
-
-/>
-
-
-
-<Route
-
-path="/feedback"
-
-element={<AdminFeedbackPage />}
-
-/>
-
-
-
-<Route
-
-path="/reports"
-
-element={<ReportsPage />}
-
-/>
-
-
-
-<Route
-
-path="/admin/time-report"
-
-element={<ManagerTimeReport />}
-
-/>
-
-
-
-<Route
-
-path="/admin/time-approvals"
-
-element={<ManagerTimeApprovals />}
-
-/>
-
-
-
-<Route
-
-path="/profile"
-
-element={<ProfilePage />}
-
-/>
-
-
-
+  <Route path="/admin/approval"             element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["PERMISSION_DELEGATE"]}><ApprovalPage /></ProtectedRoute>} />
+  <Route path="/admin/cases"                element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["CASE_READ_ALL"]}><CaseTrackingPage /></ProtectedRoute>} />
+  <Route path="/admin/cases/:id"            element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["CASE_READ_ALL"]}><CaseTrackingPage /></ProtectedRoute>} />
+  <Route path="/admin/department-management" element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["STRUCTURE_MANAGE","STRUCTURE_READ_ALL"]}><DepartmentManagementPage /></ProtectedRoute>} />
+  <Route path="/admin/product-service"      element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["SERVICE_MANAGE"]}><ProductService /></ProtectedRoute>} />
+  <Route path="/organizations"              element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["ORGANIZATION_MANAGE"]}><OrganizationPage /></ProtectedRoute>} />
+  <Route path="/organizations/:id"          element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["ORGANIZATION_MANAGE"]}><OrganizationDetailsPage /></ProtectedRoute>} />
+  <Route path="/admin/organizations/:id"    element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["ORGANIZATION_MANAGE"]}><OrganizationDetailsPage /></ProtectedRoute>} />
+  <Route path="/feedback"                   element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["CASE_READ_ANALYTICS","VIEW_ALL_CASES_METRICS"]}><AdminFeedbackPage /></ProtectedRoute>} />
+  <Route path="/reports"                    element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["CASE_READ_ANALYTICS","VIEW_ALL_CASES_DETAIL"]}><ReportsPage /></ProtectedRoute>} />
+  <Route path="/admin/time-report"          element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["TIME_READ_TEAM"]}><ManagerTimeReport /></ProtectedRoute>} />
+  <Route path="/admin/time-approvals"       element={<ProtectedRoute roles={["SYSTEM_ADMIN"]} permissions={["TIME_READ_TEAM"]}><ManagerTimeApprovals /></ProtectedRoute>} />
+  <Route path="/profile"                    element={<ProfilePage />} />
 </Route>
 
 

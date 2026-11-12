@@ -8,29 +8,24 @@ export const requirePermission = (...requiredPermissions: string[]) => {
     next: NextFunction
   ): void => {
     try {
-
-      console.log("USER =", req.user);
-      console.log("REQUIRED =", requiredPermissions);
-
       if (!req.user) {
         throw new UnauthorizedError(
           "Authentication token context unavailable."
         );
       }
 
+      // System admins bypass all permission checks
       if (req.user.partyType === "STAFF" && req.user.isSAdmin) {
         return next();
       }
 
-      const userPermissions = req.user.permissions || [];
-
-      console.log("USER PERMISSIONS =", userPermissions);
-
-      const hasPermission = requiredPermissions.some((perm) =>
-        userPermissions.includes(perm)
+      const userPermissions = (req.user.permissions || []).map(
+        (p: string) => String(p).trim().toUpperCase()
       );
 
-      console.log("HAS PERMISSION =", hasPermission);
+      const hasPermission = requiredPermissions.some((perm) =>
+        userPermissions.includes(String(perm).trim().toUpperCase())
+      );
 
       if (!hasPermission) {
         throw new ForbiddenError(
