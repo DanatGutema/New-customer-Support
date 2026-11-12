@@ -3,7 +3,7 @@ import { ENV } from "../config/env";
 import { prisma } from "../config/database";
 import crypto from "crypto";
 
-// ─── Generate a standards-compliant RFC 2822 Message-ID ──────────────────────
+// ─── RFC 2822 Message-ID generator ───────────────────────────────────────────
 
 export function generateMessageId(domain?: string): string {
   const d = domain || (ENV.SMTP_FROM?.split("@")[1]) || "motisupport.dev";
@@ -11,15 +11,42 @@ export function generateMessageId(domain?: string): string {
 }
 
 /**
- * Build the References header by appending the new messageId to an existing chain.
- * References = previous References + " " + inReplyTo
+ * Build a proper RFC 5322 References header.
+ * The chain should contain ALL prior Message-IDs, oldest first.
+ * We merge whatever was already in `existingReferences` with the new `inReplyTo`.
  */
-export function buildReferences(existingReferences: string | null | undefined, inReplyTo: string | null | undefined): string {
+export function buildReferences(
+  existingReferences: string | null | undefined,
+  inReplyTo: string | null | undefined,
+): string {
+  const seen = new Set<string>();
   const parts: string[] = [];
-  if (existingReferences) parts.push(existingReferences.trim());
-  if (inReplyTo && !parts.join(" ").includes(inReplyTo)) parts.push(inReplyTo.trim());
+
+  const add = (id: string | null | undefined) => {
+    const v = id?.trim();
+    if (v && !seen.has(v)) { seen.add(v); parts.push(v); }
+  };
+
+  // existing chain (space-separated list of message-ids)
+  if (existingReferences) {
+    existingReferences.trim().split(/\s+/).forEach(add);
+  }
+  add(inReplyTo);
+
   return parts.join(" ");
 }
+
+/**
+ * Canonical subject for a case thread.
+ * ALL emails for the same case use this subject (with "Re: " prefix for replies)
+ * so Gmail / Outlook group them into one conversation.
+ */
+export function caseThreadSubject(caseNumber: string, subjectLine: string, isRoot = false): string {
+  const base = `[Case #${caseNumber}] ${subjectLine}`;
+  return isRoot ? base : `Re: ${base}`;
+}
+
+// ─── Shared interfaces ────────────────────────────────────────────────────────
 
 interface StatusEmailInput {
   customerEmail: string;
@@ -34,6 +61,7 @@ interface CaseCreationEmailInput {
   customerEmail: string;
   customerName: string;
   caseNumber: string;
+  caseId: string;          // Required — needed to log root Message-ID against the case
   subjectLine: string;
   description: string;
   isCreatedByStaff: boolean;
@@ -51,20 +79,18 @@ interface SharedInboxEmailInput {
   creationReason?: string | null;
 }
 
-export const getTransporter = () => {
-  return nodemailer.createTransport({
+// ─── SMTP transporter ─────────────────────────────────────────────────────────
+
+export const getTransporter = () =>
+  nodemailer.createTransport({
     host: ENV.SMTP_HOST,
     port: Number(ENV.SMTP_PORT),
     secure: Number(ENV.SMTP_PORT) === 465,
-    auth: {
-      user: ENV.SMTP_USER,
-      pass: ENV.SMTP_PASS,
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
+    auth: { user: ENV.SMTP_USER, pass: ENV.SMTP_PASS },
+    tls: { rejectUnauthorized: false },
   });
-};
+
+// ─── Core dispatcher ──────────────────────────────────────────────────────────
 
 interface DispatchOptions {
   to: string;
@@ -72,7 +98,6 @@ interface DispatchOptions {
   html: string;
   kind: string;
   bcc?: string[];
-  // Email threading
   messageId?: string;
   inReplyTo?: string;
   references?: string;
@@ -82,10 +107,15 @@ interface DispatchOptions {
 
 /**
  * Shared dispatcher for every email in the system.
- * - Adds Message-ID, In-Reply-To, References headers for threading.
- * - Logs all threading metadata to EmailLog.
- * - Logs a clear success line on delivery.
- * - Throws on failure so callers that await directly are not left silent.
+ *
+ * Threading contract (RFC 5322 / RFC 2822):
+ *   • Every outbound email gets a unique Message-ID.
+ *   • Reply emails set In-Reply-To = the DIRECT parent Message-ID.
+ *   • References = full chain of all prior Message-IDs (oldest→newest).
+ *   • Subject for case emails MUST be identical on all messages in the thread
+ *     (use caseThreadSubject() everywhere — Gmail/Outlook thread by subject).
+ *   • The root email's Message-ID is stored in EmailLog with the caseId so
+ *     every follow-up can look it up and chain off it.
  */
 export const dispatchEmail = async ({
   to,
@@ -100,12 +130,11 @@ export const dispatchEmail = async ({
   bodyText,
 }: DispatchOptions) => {
   if (!ENV.SMTP_HOST || !ENV.SMTP_USER || !ENV.SMTP_PASS) {
-    const reason = `SMTP not configured (HOST=${ENV.SMTP_HOST || "unset"}, USER=${ENV.SMTP_USER ? "set" : "unset"}, PASS=${ENV.SMTP_PASS ? "set" : "unset"})`;
+    const reason = `SMTP not configured (HOST=${ENV.SMTP_HOST || "unset"})`;
     console.error(`[Email:${kind}] ABORTED -> ${to} | ${reason}`);
     throw new Error(reason);
   }
 
-  // Always generate a fresh Message-ID if not provided
   const outboundMessageId = messageId || generateMessageId();
   const refsChain = buildReferences(references, inReplyTo);
 
@@ -115,53 +144,92 @@ export const dispatchEmail = async ({
     to,
     subject,
     html,
+    // nodemailer uses 'messageId' (camelCase) to override the auto-generated one
     messageId: outboundMessageId,
-    ...(inReplyTo ? { inReplyTo } : {}),
-    ...(refsChain ? { references: refsChain } : {}),
-    ...(bcc && bcc.length ? { bcc } : {}),
+    ...(inReplyTo  ? { inReplyTo }            : {}),
+    ...(refsChain  ? { references: refsChain } : {}),
+    ...(bcc?.length ? { bcc }                 : {}),
   });
 
-  const summary = {
-    kind,
-    to,
-    subject,
-    messageId: outboundMessageId,
-    inReplyTo: inReplyTo || null,
-    accepted: info.accepted?.length ?? 0,
-    rejected: info.rejected?.length ?? 0,
-    response: info.response || "n/a",
-  };
-  console.log(`[Email:${kind}] SENT -> ${to} | ${JSON.stringify(summary)}`);
+  console.log(`[Email:${kind}] SENT -> ${to} | msgId=${outboundMessageId} inReplyTo=${inReplyTo ?? "none"}`);
 
-  if (info.rejected && info.rejected.length > 0) {
-    console.error(`[Email:${kind}] REJECTED -> ${to} | recipients: ${JSON.stringify(info.rejected)}`);
+  if (info.rejected?.length) {
+    console.error(`[Email:${kind}] REJECTED -> ${JSON.stringify(info.rejected)}`);
   }
 
-  // Persist threading metadata to EmailLog asynchronously (non-blocking)
-  try {
-    await prisma.emailLog.create({
-      data: {
-        recipientEmail: to,
-        emailType: "CASE_STATUS_CHANGED" as any, // fallback; callers should pass correct type
-        relatedCaseId: relatedCaseId || null,
-        status: "SENT",
-        sentAt: new Date(),
-        messageId: outboundMessageId,
-        inReplyTo: inReplyTo || null,
-        references: refsChain || null,
-        subject,
-        bodyText: bodyText || null,
-        direction: "OUTBOUND",
-        fromEmail: ENV.SMTP_FROM || ENV.SMTP_USER || null,
-      },
-    });
-  } catch (logErr) {
-    // Non-critical — never let logging break email delivery
-    console.error(`[Email:${kind}] EmailLog save failed:`, logErr);
-  }
+  // Persist threading metadata (non-blocking)
+  prisma.emailLog.create({
+    data: {
+      recipientEmail: to,
+      emailType: "CASE_STATUS_CHANGED" as any,
+      relatedCaseId: relatedCaseId ?? null,
+      status: "SENT",
+      sentAt: new Date(),
+      messageId: outboundMessageId,
+      inReplyTo: inReplyTo ?? null,
+      references: refsChain || null,
+      subject,
+      bodyText: bodyText ?? null,
+      direction: "OUTBOUND",
+      fromEmail: ENV.SMTP_FROM || ENV.SMTP_USER || null,
+    },
+  }).catch((e) => console.error(`[Email:${kind}] EmailLog save failed:`, e));
 
   return { ...info, outboundMessageId };
 };
+
+// ─── Thread-root lookup helper ────────────────────────────────────────────────
+
+/**
+ * Find the LATEST outbound email for this case sent to `recipientEmail`
+ * (or the global case root if no recipient filter) and return threading headers.
+ *
+ * We reply to the LATEST message so the chain stays correct in all clients.
+ */
+async function getThreadHeaders(
+  caseId: string,
+  recipientEmail?: string,
+): Promise<{ inReplyTo: string; references: string } | null> {
+  try {
+    // First: find the absolute root (oldest) for the References chain
+    const root = await prisma.emailLog.findFirst({
+      where: {
+        relatedCaseId: caseId,
+        direction: "OUTBOUND",
+        messageId: { not: null },
+        ...(recipientEmail ? { recipientEmail } : {}),
+      },
+      orderBy: { createdAt: "asc" },
+      select: { messageId: true, references: true },
+    });
+
+    // Then: find the most recent for In-Reply-To (direct parent)
+    const latest = await prisma.emailLog.findFirst({
+      where: {
+        relatedCaseId: caseId,
+        direction: "OUTBOUND",
+        messageId: { not: null },
+        ...(recipientEmail ? { recipientEmail } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      select: { messageId: true, references: true },
+    });
+
+    if (!root?.messageId || !latest?.messageId) return null;
+
+    // Build a complete references chain: existing root chain + latest messageId
+    const refs = buildReferences(
+      buildReferences(root.references, root.messageId),
+      latest.messageId,
+    );
+
+    return { inReplyTo: latest.messageId, references: refs };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Verification email ───────────────────────────────────────────────────────
 
 export const sendVerificationEmail = async (
   toEmail: string,
@@ -191,365 +259,275 @@ export const sendVerificationEmail = async (
     rawToken = typeof rawTokenOrBaseUrl === "string" ? rawTokenOrBaseUrl : "";
   } else {
     rawToken = typeof rawTokenOrBaseUrl === "string" ? rawTokenOrBaseUrl : "";
-    userType = typeof maybeUserType === "string" && (maybeUserType.toUpperCase() === "CUSTOMER" || maybeUserType.toUpperCase() === "STAFF")
-      ? maybeUserType.toUpperCase() as "CUSTOMER" | "STAFF"
-      : "CUSTOMER";
+    userType =
+      typeof maybeUserType === "string" &&
+      (maybeUserType.toUpperCase() === "CUSTOMER" || maybeUserType.toUpperCase() === "STAFF")
+        ? (maybeUserType.toUpperCase() as "CUSTOMER" | "STAFF")
+        : "CUSTOMER";
   }
 
   const verificationUrl = `${baseUrl}/verify-email?token=${rawToken}&type=${userType.toLowerCase()}`;
 
-  const htmlContent = `
-    <div style="font-family: sans-serif; color: #334155; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <p style="font-size: 16px;">Hello ${recipientName},</p>
-      <p style="font-size: 14px;">Thank you for registering. To complete your setup and activate your account email address, please click the verification button below within the next 24 hours:</p>
-      
-      <table border="0" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
+  const html = `
+    <div style="font-family:sans-serif;color:#334155;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+      <p style="font-size:16px;">Hello ${recipientName},</p>
+      <p style="font-size:14px;">Thank you for registering. Click the button below to verify your email within 24 hours:</p>
+      <table border="0" cellpadding="0" cellspacing="0" style="margin:30px 0;">
         <tr>
-          <td align="center" bgcolor="#5182c4" style="border-radius: 12px;">
-            <a href="${verificationUrl}" target="_blank" style="font-size: 14px; font-family: sans-serif; color: #ffffff; text-decoration: none; border-radius: 12px; padding: 12px 32px; border: 1px solid #5182c4; display: inline-block; font-weight: bold;">
+          <td align="center" bgcolor="#5182c4" style="border-radius:12px;">
+            <a href="${verificationUrl}" target="_blank"
+               style="font-size:14px;color:#ffffff;text-decoration:none;border-radius:12px;padding:12px 32px;display:inline-block;font-weight:bold;">
               Verify Email Address
             </a>
           </td>
         </tr>
       </table>
-
-      <p style="font-size: 12px; color: #64748b; margin-top: 30px;">
-        If the button above does not work, copy and paste the link below directly into your web browser:
-      </p>
-      <p style="font-size: 12px; word-break: break-all;">
-        <a href="${verificationUrl}" target="_blank" style="color: #5182c4;">${verificationUrl}</a>
-      </p>
-    </div>
-  `;
+      <p style="font-size:12px;color:#64748b;">Or copy: <a href="${verificationUrl}" style="color:#5182c4;">${verificationUrl}</a></p>
+    </div>`;
 
   try {
-    await dispatchEmail({
-      to: toEmail,
-      subject: "Verify Your MOTI Support Portal Account",
-      html: htmlContent,
-      kind: "verification",
-    });
+    await dispatchEmail({ to: toEmail, subject: "Verify Your MOTI Support Portal Account", html, kind: "verification" });
     return true;
-  } catch (error) {
-    console.error("[Email:verification] dispatch failure caught:", error);
+  } catch (e) {
+    console.error("[Email:verification]", e);
     return false;
   }
 };
 
-export const sendStatusUpdateEmail = async (input: StatusEmailInput) => {
-  const { customerEmail, customerName, caseNumber, caseId, subjectLine, newStatus } = input;
-
-  const FRONTEND_BASE_URL = ENV.FRONTEND_URL || "http://localhost:5173";
-  const decisionLink = caseId ? `${FRONTEND_BASE_URL}/cases/${caseId}/feedback` : `${FRONTEND_BASE_URL}/track/${caseNumber}`;
-  const rejectLink = caseId ? `${FRONTEND_BASE_URL}/cases/${caseId}/reopen` : `${FRONTEND_BASE_URL}/track/${caseNumber}`;
-  const frontendTrackingUrl = `${FRONTEND_BASE_URL}/track/${caseNumber}`;
-  const isResolutionDecisionEmail = newStatus === "RESOLVED";
-
-  // Look up the root thread Message-ID for this case to chain replies
-  let inReplyTo: string | undefined;
-  let references: string | undefined;
-  try {
-    const rootLog = await prisma.emailLog.findFirst({
-      where: {
-        relatedCaseId: caseId || undefined,
-        direction: "OUTBOUND",
-        messageId: { not: null },
-      },
-      orderBy: { createdAt: "asc" },
-      select: { messageId: true, references: true },
-    });
-    if (rootLog?.messageId) {
-      inReplyTo = rootLog.messageId;
-      references = buildReferences(rootLog.references, rootLog.messageId);
-    }
-  } catch (_) {}
-
-  const htmlContent = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-      <h2 style="color: #2c3e50;">Case Update: ${caseNumber}</h2>
-      <p>Hello ${customerName},</p>
-      <p>The progress status for your recent service ticket, <strong>"${subjectLine}"</strong>, has changed.</p>
-      
-      <div style="background-color: #f8f9fa; padding: 15px; border-left: 4px solid #3498db; margin: 20px 0; border-radius: 4px;">
-        <strong>New Status:</strong> <span style="color: #2980b9; font-weight: bold;">${newStatus}</span>
-      </div>
-
-      ${isResolutionDecisionEmail ? `
-        <p>Please confirm whether this resolution is acceptable:</p>
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${decisionLink}" style="background-color: #38a169; color: white; padding: 12px 20px; text-decoration: none; font-weight: bold; border-radius: 4px; display: inline-block; margin-right: 10px; margin-bottom: 10px;">ACCEPT</a>
-          <a href="${rejectLink}" style="background-color: #e53e3e; color: white; padding: 12px 20px; text-decoration: none; font-weight: bold; border-radius: 4px; display: inline-block; margin-bottom: 10px;">REJECT</a>
-        </div>
-      ` : `
-        <p>You can follow the full lifecycle timeline, status updates, and milestones anytime:</p>
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${frontendTrackingUrl}" style="background-color: #3498db; color: white; padding: 12px 25px; text-decoration: none; font-weight: bold; border-radius: 4px; display: inline-block;">Track Case Progress</a>
-        </div>
-      `}
-      
-      <p style="font-size: 12px; color: #7f8c8d; margin-top: 30px;">If the button above does not load, copy and paste this address into your browser window:<br>${isResolutionDecisionEmail ? `${decisionLink} / ${rejectLink}` : frontendTrackingUrl}</p>
-    </div>
-  `;
-
-  try {
-    await dispatchEmail({
-      to: customerEmail,
-      subject: `[Update] Case #${caseNumber} Status Changed to ${newStatus}`,
-      html: htmlContent,
-      kind: `status-${newStatus}`,
-      inReplyTo,
-      references,
-      relatedCaseId: caseId,
-      bodyText: `Case #${caseNumber} status changed to ${newStatus}.`,
-    });
-  } catch (error) {
-    console.error(`Critical non-blocking failure emitting transaction notification email to ${customerEmail}:`, error);
-  }
-};
-
-export const triggerResolutionEmail = async (caseReport: any): Promise<void> => {
-  const customerEmail = caseReport.customer?.email;
-  const customerName = caseReport.customer?.firstName || "Valued Customer";
-
-  if (!customerEmail) {
-    console.warn(`[EmailService] Skipped email notice: No email found for customer on case ID ${caseReport.id}`);
-    return;
-  }
-
-  const FRONTEND_BASE_URL = ENV.FRONTEND_URL || "http://localhost:3000";
-  const acceptAndRateLink = `${FRONTEND_BASE_URL}/cases/${caseReport.id}/feedback`;
-  const rejectAndReopenLink = `${FRONTEND_BASE_URL}/cases/${caseReport.id}/reopen`;
-  const emailSubject = `Case Resolved: #${caseReport.caseNumber || "Update"} - ${caseReport.subject}`;
-
-  // Thread this reply to the original case creation email
-  let inReplyTo: string | undefined;
-  let references: string | undefined;
-  try {
-    const rootLog = await prisma.emailLog.findFirst({
-      where: { relatedCaseId: caseReport.id, direction: "OUTBOUND", messageId: { not: null } },
-      orderBy: { createdAt: "asc" },
-      select: { messageId: true, references: true },
-    });
-    if (rootLog?.messageId) {
-      inReplyTo = rootLog.messageId;
-      references = buildReferences(rootLog.references, rootLog.messageId);
-    }
-  } catch (_) {}
-
-  const emailHtml = `
-    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-      <h2 style="color: #2b6cb0; margin-bottom: 16px;">Your Case Has Been Resolved</h2>
-      <p>Hello ${customerName},</p>
-      <p>An agent has updated your support ticket and submitted a resolution summary for your review.</p>
-      <div style="background-color: #f7fafc; border-left: 4px solid #4299e1; padding: 16px; margin: 20px 0; border-radius: 0 4px 4px 0;">
-        <strong style="display: block; margin-bottom: 6px; color: #2d3748;">Resolution Summary:</strong>
-        <p style="margin: 0; color: #4a5568; font-style: italic; white-space: pre-wrap;">"${caseReport.resolutionSummary}"</p>
-      </div>
-      <p style="margin-bottom: 24px;">Please take a moment to confirm if this issue is settled to your satisfaction:</p>
-      <div style="margin-bottom: 24px;">
-        <a href="${acceptAndRateLink}" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-right: 12px; margin-bottom: 12px;">ACCEPT</a>
-        <a href="${rejectAndReopenLink}" style="background-color: #e53e3e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-bottom: 12px;">REJECT</a>
-      </div>
-      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-      <p style="font-size: 12px; color: #718096; line-height: 1.5;">
-        <strong>Please Note:</strong> If you do not accept or reject this resolution within <strong>3 days</strong>, our system will automatically mark this case file as closed.
-      </p>
-    </div>
-  `;
-
-  await dispatchEmail({
-    to: customerEmail,
-    subject: emailSubject,
-    html: emailHtml,
-    kind: "resolved",
-    inReplyTo,
-    references,
-    relatedCaseId: caseReport.id,
-    bodyText: `Case #${caseReport.caseNumber} resolved. Summary: ${caseReport.resolutionSummary}`,
-  });
-};
-
-
-export const triggerResolutionReminderEmail = async (caseReport: any): Promise<void> => {
-  const customerEmail = caseReport.customer?.email;
-  const customerName = caseReport.customer?.firstName || "Valued Customer";
-
-  if (!customerEmail) return;
-
-  const FRONTEND_BASE_URL = ENV.FRONTEND_URL || "http://localhost:3000";
-  const acceptLink = `${FRONTEND_BASE_URL}/cases/${caseReport.id}/feedback`;
-  const rejectLink = `${FRONTEND_BASE_URL}/cases/${caseReport.id}/reopen`;
-
-  const html = `
-    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-      <h2 style="color: #2b6cb0; margin-bottom: 16px;">Reminder: Please Confirm the Resolution</h2>
-      <p>Hello ${customerName},</p>
-      <p>We resolved your case regarding <strong>"${caseReport.subject}"</strong> and are still waiting for your response.</p>
-      <p>Please review the resolution summary and choose one of the options below:</p>
-      <div style="margin: 24px 0;">
-        <a href="${acceptLink}" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-right: 12px; margin-bottom: 12px;">ACCEPT</a>
-        <a href="${rejectLink}" style="background-color: #e53e3e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-bottom: 12px;">REJECT</a>
-      </div>
-      <p style="font-size: 12px; color: #718096; line-height: 1.5;">If you do not respond, the system will automatically close the case after the remaining confirmation window.</p>
-    </div>
-  `;
-
-  await dispatchEmail({
-    to: customerEmail,
-    subject: `Reminder: Confirm resolution for case #${caseReport.caseNumber}`,
-    html,
-    kind: "resolution-reminder",
-  });
-};
-
-export const triggerAutoCloseEmail = async (caseReport: any): Promise<void> => {
-  const customerEmail = caseReport.customer?.email;
-  const customerName = caseReport.customer?.firstName || "Valued Customer";
-
-  if (!customerEmail) return;
-
-  const emailSubject = `Notice: Case #${caseReport.caseNumber || "Update"} has been closed automatically`;
-
-  const emailHtml = `
-    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-      <h2 style="color: #4a5568; margin-bottom: 16px;">Case Closed Due to Inactivity</h2>
-      <p>Hello ${customerName},</p>
-      <p>We resolved your case regarding <strong>"${caseReport.subject}"</strong>, but we did not receive your response.</p>
-      <p>Since you did not take any action, we closed the case.</p>
-      
-      <div style="background-color: #fffaf0; border-left: 4px solid #dd6b20; padding: 16px; margin: 20px 0; border-radius: 0 4px 4px 0;">
-        <p style="margin: 0; color: #dd6b20; font-weight: bold;">Need to continue working on this issue?</p>
-        <p style="margin: 4px 0 0 0; color: #7b341e;">Please initialize a new support case report from your dashboard.</p>
-      </div>
-
-      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-      <p style="font-size: 12px; color: #a0aec0; text-align: center;">Thank you for choosing our services.</p>
-    </div>
-  `;
-
-  await dispatchEmail({
-    to: customerEmail,
-    subject: emailSubject,
-    html: emailHtml,
-    kind: "auto-close",
-  });
-};
-
-export const sendPasswordResetEmail = async (
-  toEmail: string,
-  fullName: string,
-  rawToken: string,
-  userType: "CUSTOMER" | "STAFF",
-): Promise<boolean> => {
-  const baseUrl = ENV.FRONTEND_URL || "http://localhost:3000";
-  const resetUrl = `${baseUrl}/reset-password?token=${rawToken}&type=${userType.toLowerCase()}`;
-
-  const htmlContent = `
-    <div style="font-family: sans-serif; color: #334155; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <p style="font-size: 16px;">Hello ${fullName},</p>
-      <p style="font-size: 14px;">We received a request to reset your password for your MOTI Support Portal account. Click the button below to choose a new password (this link expires in 15 minutes):</p>
-      
-      <table border="0" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
-        <tr>
-          <td align="center" bgcolor="#5182c4" style="border-radius: 12px;">
-            <a href="${resetUrl}" target="_blank" style="font-size: 14px; font-family: sans-serif; color: #ffffff; text-decoration: none; border-radius: 12px; padding: 12px 32px; border: 1px solid #5182c4; display: inline-block; font-weight: bold;">
-              Reset Password
-            </a>
-          </td>
-        </tr>
-      </table>
-
-      <p style="font-size: 12px; color: #64748b; margin-top: 30px;">
-        If you did not request a password reset, you can safely ignore this email.
-      </p>
-      <p style="font-size: 12px; color: #64748b;">
-        Or copy and paste this link into your browser:
-      </p>
-      <p style="font-size: 12px; word-break: break-all;">
-        <a href="${resetUrl}" target="_blank" style="color: #5182c4;">${resetUrl}</a>
-      </p>
-    </div>
-  `;
-
-  try {
-    await dispatchEmail({
-      to: toEmail,
-      subject: "Reset Your MOTI Support Portal Password",
-      html: htmlContent,
-      kind: "password-reset",
-    });
-    return true;
-  } catch (error) {
-    console.error("[Email:password-reset] dispatch failure caught:", error);
-    return false;
-  }
-};
+// ─── Case creation — ROOT of the thread ──────────────────────────────────────
 
 export const sendCaseCreationCustomerEmail = async (
-  input: CaseCreationEmailInput
+  input: CaseCreationEmailInput,
 ): Promise<boolean> => {
-  const {
-    customerEmail,
-    customerName,
-    caseNumber,
-    subjectLine,
-    description,
-    isCreatedByStaff,
-    creationReason,
-  } = input;
+  const { customerEmail, customerName, caseNumber, caseId, subjectLine, description, isCreatedByStaff, creationReason } = input;
 
-  const subject = isCreatedByStaff
-    ? `[Case #${caseNumber}] Support case created for you: ${subjectLine}`
-    : `[Case #${caseNumber}] We Received Your Request: ${subjectLine}`;
+  // This is the THREAD ROOT. Use the canonical base subject (no "Re:" prefix).
+  const subject = caseThreadSubject(caseNumber, subjectLine, true);
 
   const bodyGreeting = isCreatedByStaff
-    ? `<p style="font-size: 14px;">Our support team created a request for you.</p>`
-    : `<p style="font-size: 14px;">Thanks for contacting us! We received your message and assigned it ticket number <b>#${caseNumber}</b>.</p>`;
+    ? `<p style="font-size:14px;">Our support team has opened a case on your behalf.</p>`
+    : `<p style="font-size:14px;">Thanks for contacting us! Your request has been assigned ticket <b>#${caseNumber}</b>.</p>`;
 
-  const htmlContent = `
-    <div style="font-family: sans-serif; color: #334155; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <p style="font-size: 16px;">Hello ${customerName},</p>
+  const html = `
+    <div style="font-family:sans-serif;color:#334155;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+      <p style="font-size:16px;">Hello ${customerName},</p>
       ${bodyGreeting}
-      <div style="background-color: #f8fafc; border-left: 4px solid #5182c4; padding: 12px 16px; margin: 20px 0;">
-        <p style="margin: 0; font-size: 14px;"><b>Case Number:</b> #${caseNumber}</p>
-        <p style="margin: 4px 0 0; font-size: 14px;"><b>Subject:</b> ${subjectLine}</p>
+      <div style="background:#f8fafc;border-left:4px solid #5182c4;padding:12px 16px;margin:20px 0;">
+        <p style="margin:0;font-size:14px;"><b>Case Number:</b> #${caseNumber}</p>
+        <p style="margin:4px 0 0;font-size:14px;"><b>Subject:</b> ${subjectLine}</p>
+        ${creationReason ? `<p style="margin:4px 0 0;font-size:14px;"><b>Reason:</b> ${creationReason}</p>` : ""}
       </div>
-      <p style="font-size: 14px;"><b>Description:</b></p>
-      <p style="font-size: 14px; color: #475569;">${description}</p>
-      <p style="font-size: 14px; margin-top: 24px;">Our support team is reviewing your request and will follow up with updates shortly.</p>
-    </div>
-  `;
+      <p style="font-size:14px;"><b>Description:</b></p>
+      <p style="font-size:14px;color:#475569;">${description}</p>
+      <p style="font-size:14px;margin-top:24px;">Our support team is reviewing your request and will follow up shortly.</p>
+    </div>`;
 
-  // Root Message-ID for this case thread — stored so all subsequent emails can reference it
+  // Generate a stable root Message-ID for this case thread
   const rootMessageId = generateMessageId();
 
   try {
     await dispatchEmail({
       to: customerEmail,
       subject,
-      html: htmlContent,
+      html,
       kind: "case-created",
       messageId: rootMessageId,
+      relatedCaseId: caseId,          // ← critical: link root email to the case
       bodyText: `Case #${caseNumber}: ${subjectLine}\n\n${description}`,
     });
-
-    // Persist the root Message-ID against the case number so future emails can thread off it
-    try {
-      await prisma.emailLog.updateMany({
-        where: { messageId: rootMessageId },
-        data: { emailType: "CASE_STATUS_CHANGED" as any },
-      });
-    } catch (_) {}
-
     return true;
-  } catch (error) {
-    console.error("[Email:case-created] Failed to send customer case creation receipt:", error);
+  } catch (e) {
+    console.error("[Email:case-created]", e);
     return false;
   }
 };
 
+// ─── Status update email (customer) ──────────────────────────────────────────
 
-// 1. Interfaces for Email Inputs
+export const sendStatusUpdateEmail = async (input: StatusEmailInput) => {
+  const { customerEmail, customerName, caseNumber, caseId, subjectLine, newStatus } = input;
+
+  const FRONTEND = ENV.FRONTEND_URL || "http://localhost:5173";
+  const decisionLink  = caseId ? `${FRONTEND}/cases/${caseId}/feedback` : `${FRONTEND}/track/${caseNumber}`;
+  const rejectLink    = caseId ? `${FRONTEND}/cases/${caseId}/reopen`   : `${FRONTEND}/track/${caseNumber}`;
+  const trackingUrl   = `${FRONTEND}/track/${caseNumber}`;
+  const isResolved    = newStatus === "RESOLVED";
+
+  // Thread under existing case emails to this customer
+  const thread = caseId ? await getThreadHeaders(caseId, customerEmail) : null;
+
+  // Use the canonical Re: subject — same base as the creation email
+  const subject = subjectLine
+    ? caseThreadSubject(caseNumber, subjectLine)
+    : `Re: [Case #${caseNumber}] Status Update`;
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e0e0e0;border-radius:8px;">
+      <h2 style="color:#2c3e50;">Case Update: #${caseNumber}</h2>
+      <p>Hello ${customerName},</p>
+      <p>Your support ticket <strong>"${subjectLine}"</strong> has been updated.</p>
+      <div style="background:#f8f9fa;padding:15px;border-left:4px solid #3498db;margin:20px 0;border-radius:4px;">
+        <strong>New Status:</strong> <span style="color:#2980b9;font-weight:bold;">${newStatus}</span>
+      </div>
+      ${isResolved ? `
+        <p>Please confirm whether this resolution is acceptable:</p>
+        <div style="text-align:center;margin:30px 0;">
+          <a href="${decisionLink}" style="background:#38a169;color:white;padding:12px 20px;text-decoration:none;font-weight:bold;border-radius:4px;display:inline-block;margin-right:10px;margin-bottom:10px;">ACCEPT</a>
+          <a href="${rejectLink}"   style="background:#e53e3e;color:white;padding:12px 20px;text-decoration:none;font-weight:bold;border-radius:4px;display:inline-block;margin-bottom:10px;">REJECT</a>
+        </div>
+      ` : `
+        <p>Track your case progress:</p>
+        <div style="text-align:center;margin:30px 0;">
+          <a href="${trackingUrl}" style="background:#3498db;color:white;padding:12px 25px;text-decoration:none;font-weight:bold;border-radius:4px;display:inline-block;">Track Case Progress</a>
+        </div>
+      `}
+    </div>`;
+
+  try {
+    await dispatchEmail({
+      to: customerEmail,
+      subject,
+      html,
+      kind: `status-${newStatus}`,
+      inReplyTo:    thread?.inReplyTo,
+      references:   thread?.references,
+      relatedCaseId: caseId,
+      bodyText: `Case #${caseNumber} status changed to ${newStatus}.`,
+    });
+  } catch (e) {
+    console.error(`[Email:status] Failed for ${customerEmail}:`, e);
+  }
+};
+
+// ─── Resolution email (customer) ─────────────────────────────────────────────
+
+export const triggerResolutionEmail = async (caseReport: any): Promise<void> => {
+  const customerEmail = caseReport.customer?.email;
+  const customerName  = caseReport.customer?.firstName || "Valued Customer";
+  if (!customerEmail) return;
+
+  const FRONTEND = ENV.FRONTEND_URL || "http://localhost:3000";
+  const acceptLink = `${FRONTEND}/cases/${caseReport.id}/feedback`;
+  const rejectLink = `${FRONTEND}/cases/${caseReport.id}/reopen`;
+
+  const thread = caseReport.id
+    ? await getThreadHeaders(caseReport.id, customerEmail)
+    : null;
+
+  // Same canonical subject as creation email, with Re: prefix
+  const subject = caseReport.subject
+    ? caseThreadSubject(caseReport.caseNumber, caseReport.subject)
+    : `Re: [Case #${caseReport.caseNumber ?? ""}] Resolution`;
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+      <h2 style="color:#2b6cb0;margin-bottom:16px;">Your Case Has Been Resolved</h2>
+      <p>Hello ${customerName},</p>
+      <p>An agent has submitted a resolution summary for your review.</p>
+      <div style="background:#f7fafc;border-left:4px solid #4299e1;padding:16px;margin:20px 0;border-radius:0 4px 4px 0;">
+        <strong style="display:block;margin-bottom:6px;color:#2d3748;">Resolution Summary:</strong>
+        <p style="margin:0;color:#4a5568;font-style:italic;white-space:pre-wrap;">"${caseReport.resolutionSummary}"</p>
+      </div>
+      <p>Please confirm if this issue is settled to your satisfaction:</p>
+      <div style="margin-bottom:24px;">
+        <a href="${acceptLink}" style="background:#38a169;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;display:inline-block;margin-right:12px;margin-bottom:12px;">ACCEPT</a>
+        <a href="${rejectLink}" style="background:#e53e3e;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;display:inline-block;margin-bottom:12px;">REJECT</a>
+      </div>
+      <p style="font-size:12px;color:#718096;">If you do not respond within <strong>3 days</strong>, the case will be automatically closed.</p>
+    </div>`;
+
+  await dispatchEmail({
+    to: customerEmail,
+    subject,
+    html,
+    kind: "resolved",
+    inReplyTo:    thread?.inReplyTo,
+    references:   thread?.references,
+    relatedCaseId: caseReport.id,
+    bodyText: `Case #${caseReport.caseNumber} resolved. Summary: ${caseReport.resolutionSummary}`,
+  });
+};
+
+// ─── Resolution reminder (customer) ──────────────────────────────────────────
+
+export const triggerResolutionReminderEmail = async (caseReport: any): Promise<void> => {
+  const customerEmail = caseReport.customer?.email;
+  const customerName  = caseReport.customer?.firstName || "Valued Customer";
+  if (!customerEmail) return;
+
+  const FRONTEND = ENV.FRONTEND_URL || "http://localhost:3000";
+  const acceptLink = `${FRONTEND}/cases/${caseReport.id}/feedback`;
+  const rejectLink = `${FRONTEND}/cases/${caseReport.id}/reopen`;
+
+  const thread = caseReport.id ? await getThreadHeaders(caseReport.id, customerEmail) : null;
+
+  const subject = caseReport.subject
+    ? caseThreadSubject(caseReport.caseNumber, caseReport.subject)
+    : `Re: [Case #${caseReport.caseNumber ?? ""}] Reminder`;
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+      <h2 style="color:#2b6cb0;margin-bottom:16px;">Reminder: Please Confirm the Resolution</h2>
+      <p>Hello ${customerName},</p>
+      <p>We resolved your case regarding <strong>"${caseReport.subject}"</strong> and are still waiting for your response.</p>
+      <div style="margin:24px 0;">
+        <a href="${acceptLink}" style="background:#38a169;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;display:inline-block;margin-right:12px;margin-bottom:12px;">ACCEPT</a>
+        <a href="${rejectLink}" style="background:#e53e3e;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;display:inline-block;margin-bottom:12px;">REJECT</a>
+      </div>
+      <p style="font-size:12px;color:#718096;">If you do not respond, the system will automatically close the case.</p>
+    </div>`;
+
+  await dispatchEmail({
+    to: customerEmail,
+    subject,
+    html,
+    kind: "resolution-reminder",
+    inReplyTo:    thread?.inReplyTo,
+    references:   thread?.references,
+    relatedCaseId: caseReport.id,
+    bodyText: `Reminder: Please confirm resolution for case #${caseReport.caseNumber}.`,
+  });
+};
+
+// ─── Auto-close email (customer) ─────────────────────────────────────────────
+
+export const triggerAutoCloseEmail = async (caseReport: any): Promise<void> => {
+  const customerEmail = caseReport.customer?.email;
+  const customerName  = caseReport.customer?.firstName || "Valued Customer";
+  if (!customerEmail) return;
+
+  const thread = caseReport.id ? await getThreadHeaders(caseReport.id, customerEmail) : null;
+
+  const subject = caseReport.subject
+    ? caseThreadSubject(caseReport.caseNumber, caseReport.subject)
+    : `Re: [Case #${caseReport.caseNumber ?? ""}] Closed`;
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+      <h2 style="color:#4a5568;margin-bottom:16px;">Case Closed Due to Inactivity</h2>
+      <p>Hello ${customerName},</p>
+      <p>We resolved your case regarding <strong>"${caseReport.subject}"</strong>, but we did not receive your response, so the case has been closed.</p>
+      <div style="background:#fffaf0;border-left:4px solid #dd6b20;padding:16px;margin:20px 0;border-radius:0 4px 4px 0;">
+        <p style="margin:0;color:#dd6b20;font-weight:bold;">Need to continue working on this issue?</p>
+        <p style="margin:4px 0 0;color:#7b341e;">Please open a new support case from your dashboard.</p>
+      </div>
+      <p style="font-size:12px;color:#a0aec0;text-align:center;">Thank you for choosing our services.</p>
+    </div>`;
+
+  await dispatchEmail({
+    to: customerEmail,
+    subject,
+    html,
+    kind: "auto-close",
+    inReplyTo:    thread?.inReplyTo,
+    references:   thread?.references,
+    relatedCaseId: caseReport.id,
+    bodyText: `Case #${caseReport.caseNumber} has been automatically closed.`,
+  });
+};
+
+// ─── Case assignment emails ───────────────────────────────────────────────────
+
 interface CaseAssignmentEmailInput {
   agentEmail: string;
   agentName: string;
@@ -562,199 +540,212 @@ interface CustomerAssignmentEmailInput {
   customerEmail: string;
   customerName: string;
   caseNumber: string;
+  caseId?: string;
+  subjectLine?: string;
 }
 
-// 2. Email function for Assigned Agent
 export const sendCaseAssignmentEmail = async (
-  input: CaseAssignmentEmailInput
+  input: CaseAssignmentEmailInput,
 ): Promise<boolean> => {
   const { agentEmail, agentName, caseNumber, caseId, subjectLine } = input;
-  const baseUrl = ENV.FRONTEND_URL || "http://localhost:3000";
-  const caseUrl = `${baseUrl}/cases/${caseNumber}`;
+  const baseUrl  = ENV.FRONTEND_URL || "http://localhost:3000";
+  const caseUrl  = `${baseUrl}/support/case/${caseId ?? caseNumber}`;
 
-  const htmlContent = `
-    <div style="font-family: sans-serif; color: #334155; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <p style="font-size: 16px;">Hello ${agentName},</p>
-      <p style="font-size: 14px;">You have been assigned to handle support ticket <strong>#${caseNumber}</strong>${subjectLine ? `: "${subjectLine}"` : ''}.</p>
-      
-      <table border="0" cellpadding="0" cellspacing="0" style="margin: 25px 0;">
+  const thread = caseId ? await getThreadHeaders(caseId, agentEmail) : null;
+
+  // Agents get a subject based on the same canonical pattern
+  const subject = subjectLine
+    ? caseThreadSubject(caseNumber, subjectLine)
+    : `Re: [Case #${caseNumber}] New Assignment`;
+
+  const html = `
+    <div style="font-family:sans-serif;color:#334155;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+      <p style="font-size:16px;">Hello ${agentName},</p>
+      <p style="font-size:14px;">You have been assigned to handle support ticket <strong>#${caseNumber}</strong>${subjectLine ? `: "${subjectLine}"` : ""}.</p>
+      <table border="0" cellpadding="0" cellspacing="0" style="margin:25px 0;">
         <tr>
-          <td align="center" bgcolor="#5182c4" style="border-radius: 8px;">
-            <a href="${caseUrl}" target="_blank" style="font-size: 14px; font-family: sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; padding: 10px 24px; display: inline-block; font-weight: bold;">
-              View Case File
+          <td align="center" bgcolor="#5182c4" style="border-radius:8px;">
+            <a href="${caseUrl}" target="_blank"
+               style="font-size:14px;color:#ffffff;text-decoration:none;border-radius:8px;padding:10px 24px;display:inline-block;font-weight:bold;">
+              View Case
             </a>
           </td>
         </tr>
       </table>
-
-      <p style="font-size: 12px; color: #64748b;">Please log in to your staff portal to review and manage this case.</p>
-    </div>
-  `;
+      <p style="font-size:12px;color:#64748b;">Please log in to your staff portal to manage this case.</p>
+    </div>`;
 
   try {
-    // Thread under the first email sent to this agent for this case
-    let inReplyTo: string | undefined;
-    let references: string | undefined;
-    if (caseId) {
-      try {
-        const rootLog = await prisma.emailLog.findFirst({
-          where: {
-            relatedCaseId: caseId,
-            direction: "OUTBOUND",
-            messageId: { not: null },
-            recipientEmail: agentEmail,
-          },
-          orderBy: { createdAt: "asc" },
-          select: { messageId: true, references: true },
-        });
-        if (rootLog?.messageId) {
-          inReplyTo  = rootLog.messageId;
-          references = buildReferences(rootLog.references, rootLog.messageId);
-        }
-      } catch (_) {}
-    }
-
     await dispatchEmail({
       to: agentEmail,
-      subject: `[New Assignment] Case #${caseNumber}`,
-      html: htmlContent,
+      subject,
+      html,
       kind: "agent-assigned",
-      inReplyTo,
-      references,
+      inReplyTo:    thread?.inReplyTo,
+      references:   thread?.references,
       relatedCaseId: caseId,
       bodyText: `You have been assigned to Case #${caseNumber}${subjectLine ? `: ${subjectLine}` : ""}.`,
     });
     return true;
-  } catch (error) {
-    console.error(`Failed to send assignment email to ${agentEmail}:`, error);
+  } catch (e) {
+    console.error(`[Email:agent-assigned] Failed for ${agentEmail}:`, e);
     return false;
   }
 };
-// 3. Email function for Customer upon initial assignment
+
 export const sendCustomerAssignmentEmail = async (
-  input: CustomerAssignmentEmailInput
+  input: CustomerAssignmentEmailInput,
 ): Promise<boolean> => {
-  const { customerEmail, customerName, caseNumber } = input;
-  const baseUrl = ENV.FRONTEND_URL || "http://localhost:3000";
+  const { customerEmail, customerName, caseNumber, caseId, subjectLine } = input;
+  const baseUrl     = ENV.FRONTEND_URL || "http://localhost:3000";
   const trackingUrl = `${baseUrl}/track/${caseNumber}`;
 
-  const htmlContent = `
-    <div style="font-family: sans-serif; color: #334155; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <p style="font-size: 16px;">Hello ${customerName},</p>
-      <p style="font-size: 14px;">Your support request <strong>#${caseNumber}</strong> has been assigned to an agent and is currently in progress.</p>
-      
-      <div style="text-align: center; margin: 25px 0;">
-        <a href="${trackingUrl}" style="background-color: #5182c4; color: white; padding: 10px 24px; text-decoration: none; font-weight: bold; border-radius: 8px; display: inline-block;">
+  const thread = caseId ? await getThreadHeaders(caseId, customerEmail) : null;
+
+  const subject = subjectLine
+    ? caseThreadSubject(caseNumber, subjectLine)
+    : `Re: [Case #${caseNumber}] Agent Assigned`;
+
+  const html = `
+    <div style="font-family:sans-serif;color:#334155;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+      <p style="font-size:16px;">Hello ${customerName},</p>
+      <p style="font-size:14px;">Your support request <strong>#${caseNumber}</strong> has been assigned to an agent and is now in progress.</p>
+      <div style="text-align:center;margin:25px 0;">
+        <a href="${trackingUrl}" style="background:#5182c4;color:white;padding:10px 24px;text-decoration:none;font-weight:bold;border-radius:8px;display:inline-block;">
           Track Progress
         </a>
       </div>
-    </div>
-  `;
+    </div>`;
 
   try {
     await dispatchEmail({
       to: customerEmail,
-      subject: `[Update] Case #${caseNumber} Assigned to Support Agent`,
-      html: htmlContent,
+      subject,
+      html,
       kind: "customer-assigned",
+      inReplyTo:    thread?.inReplyTo,
+      references:   thread?.references,
+      relatedCaseId: caseId,
+      bodyText: `Case #${caseNumber} has been assigned to a support agent.`,
     });
     return true;
-  } catch (error) {
-    console.error(`Failed to send customer assignment email to ${customerEmail}:`, error);
+  } catch (e) {
+    console.error(`[Email:customer-assigned] Failed for ${customerEmail}:`, e);
     return false;
   }
 };
 
+// ─── Shared support inbox alert ───────────────────────────────────────────────
 
- export const sendSharedSupportInboxAlert = async (
-  input: SharedInboxEmailInput
+export const sendSharedSupportInboxAlert = async (
+  input: SharedInboxEmailInput,
 ): Promise<boolean> => {
-  const {
-    caseNumber,
-    subjectLine,
-    description,
-    customerName,
-    customerEmail,
-    branchName,
-    creatorName,
-    creationReason,
-  } = input;
+  const { caseNumber, subjectLine, description, customerName, customerEmail, branchName, creatorName, creationReason } = input;
 
-  const htmlContent = `
-    <div style="font-family: sans-serif; color: #334155; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <h2 style="color: #1e293b; margin-bottom: 8px;">New Case Alert</h2>
-      <p style="font-size: 14px; color: #64748b;">A new support case is awaiting review and assignment to a support agent.</p>
-      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 16px 0;" />
-
-      <ul style="padding-left: 20px; font-size: 14px;">
+  const html = `
+    <div style="font-family:sans-serif;color:#334155;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+      <h2 style="color:#1e293b;margin-bottom:8px;">New Case Alert</h2>
+      <p style="font-size:14px;color:#64748b;">A new support case is awaiting assignment.</p>
+      <hr style="border:0;border-top:1px solid #e2e8f0;margin:16px 0;" />
+      <ul style="padding-left:20px;font-size:14px;">
         <li><b>Case Number:</b> #${caseNumber}</li>
         <li><b>Logged By:</b> ${creatorName}</li>
         <li><b>Customer:</b> ${customerName} (${customerEmail})</li>
         <li><b>Branch:</b> ${branchName}</li>
         <li><b>Subject:</b> ${subjectLine}</li>
-        ${creationReason ? `<li><b>Reason Logged:</b> ${creationReason}</li>` : ""}
+        ${creationReason ? `<li><b>Reason:</b> ${creationReason}</li>` : ""}
       </ul>
-
-      <h4 style="margin-bottom: 8px;">Issue Description:</h4>
-      <p style="background-color: #f1f5f9; padding: 12px; border-radius: 6px; font-size: 14px;">${description}</p>
-    </div>
-  `;
+      <h4 style="margin-bottom:8px;">Description:</h4>
+      <p style="background:#f1f5f9;padding:12px;border-radius:6px;font-size:14px;">${description}</p>
+    </div>`;
 
   try {
     await dispatchEmail({
       to: ENV.SHARED_SUPPORT_INBOX || "",
       subject: `[New Case #${caseNumber}] ${subjectLine}`,
-      html: htmlContent,
+      html,
       kind: "shared-inbox",
     });
     return true;
-  } catch (error) {
-    console.error("[Email:shared-inbox] Failed to send shared support inbox alert:", error);
+  } catch (e) {
+    console.error("[Email:shared-inbox]", e);
     return false;
   }
 };
 
+// ─── Password reset ───────────────────────────────────────────────────────────
+
+export const sendPasswordResetEmail = async (
+  toEmail: string,
+  fullName: string,
+  rawToken: string,
+  userType: "CUSTOMER" | "STAFF",
+): Promise<boolean> => {
+  const baseUrl  = ENV.FRONTEND_URL || "http://localhost:3000";
+  const resetUrl = `${baseUrl}/reset-password?token=${rawToken}&type=${userType.toLowerCase()}`;
+
+  const html = `
+    <div style="font-family:sans-serif;color:#334155;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+      <p style="font-size:16px;">Hello ${fullName},</p>
+      <p style="font-size:14px;">We received a request to reset your password. Click below (expires in 15 minutes):</p>
+      <table border="0" cellpadding="0" cellspacing="0" style="margin:30px 0;">
+        <tr>
+          <td align="center" bgcolor="#5182c4" style="border-radius:12px;">
+            <a href="${resetUrl}" target="_blank"
+               style="font-size:14px;color:#ffffff;text-decoration:none;border-radius:12px;padding:12px 32px;display:inline-block;font-weight:bold;">
+              Reset Password
+            </a>
+          </td>
+        </tr>
+      </table>
+      <p style="font-size:12px;color:#64748b;">Or copy: <a href="${resetUrl}" style="color:#5182c4;">${resetUrl}</a></p>
+    </div>`;
+
+  try {
+    await dispatchEmail({ to: toEmail, subject: "Reset Your MOTI Support Portal Password", html, kind: "password-reset" });
+    return true;
+  } catch (e) {
+    console.error("[Email:password-reset]", e);
+    return false;
+  }
+};
+
+// ─── Account approval ─────────────────────────────────────────────────────────
 
 export const sendAccountApprovalEmail = async (
   to: string,
   fullName: string,
   frontendUrl: string,
-  userType: "STAFF" | "CUSTOMER"
+  userType: "STAFF" | "CUSTOMER",
 ): Promise<boolean> => {
   try {
     const loginUrl = `${frontendUrl}/login`;
 
     const html = `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2563eb;">Account Approved!</h2>
+      <div style="font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:600px;margin:0 auto;">
+        <h2 style="color:#2563eb;">Account Approved!</h2>
         <p>Hello <strong>${fullName}</strong>,</p>
-        <p>Your <strong>${userType}</strong> account registration has been reviewed and approved by our system administrator.</p>
-        <p>You can now log in and access your portal features.</p>
-        <div style="margin: 25px 0;">
-          <a href="${loginUrl}" 
-             style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+        <p>Your <strong>${userType}</strong> account has been approved. You can now log in.</p>
+        <div style="margin:25px 0;">
+          <a href="${loginUrl}"
+             style="background:#2563eb;color:#ffffff;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:bold;display:inline-block;">
             Log In to Your Account
           </a>
         </div>
-        <p style="font-size: 13px; color: #666; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">
-          If you did not request this account, please ignore this email or contact support immediately.
+        <p style="font-size:13px;color:#666;margin-top:30px;border-top:1px solid #eee;padding-top:10px;">
+          If you did not request this account, please contact support immediately.
         </p>
-      </div>
-    `;
+      </div>`;
 
-    await dispatchEmail({
-      to,
-      subject: "Your Account Has Been Approved!",
-      html,
-      kind: "account-approved",
-    });
-
+    await dispatchEmail({ to, subject: "Your Account Has Been Approved!", html, kind: "account-approved" });
     return true;
-  } catch (error) {
-    console.error(`[SMTP ERROR] Failed to send approval email to ${to}:`, error);
+  } catch (e) {
+    console.error(`[Email:account-approved] Failed for ${to}:`, e);
     return false;
   }
 };
+
+// ─── Staff case update email ──────────────────────────────────────────────────
 
 interface StaffCaseUpdateEmailInput {
   staffEmail: string;
@@ -771,128 +762,75 @@ interface StaffCaseUpdateEmailInput {
 }
 
 export const sendStaffCaseUpdateEmail = async (
-  input: StaffCaseUpdateEmailInput
+  input: StaffCaseUpdateEmailInput,
 ): Promise<boolean> => {
   const {
-    staffEmail,
-    staffName,
-    caseNumber,
-    caseId,
-    subjectLine,
-    updateType,
-    newStatus,
-    previousStatus,
-    updatedBy,
-    updateDetails,
-    caseUrl,
+    staffEmail, staffName, caseNumber, caseId, subjectLine,
+    updateType, newStatus, previousStatus, updatedBy, updateDetails, caseUrl,
   } = input;
 
-  const updateTypeLabels: Record<string, string> = {
-    status_change: "Status Updated",
-    resolution: "Case Resolved",
-    closure: "Case Closed",
-    reassignment: "Case Reassigned",
+  const labels: Record<string, string> = {
+    status_change:   "Status Updated",
+    resolution:      "Case Resolved",
+    closure:         "Case Closed",
+    reassignment:    "Case Reassigned",
     priority_change: "Priority Changed",
-    escalation: "Case Escalated",
-    note_added: "Note Added",
+    escalation:      "Case Escalated",
+    note_added:      "Note Added",
   };
-
-  const updateTypeLabel = updateTypeLabels[updateType] || "Case Updated";
+  const label = labels[updateType] || "Case Updated";
 
   const statusColors: Record<string, string> = {
-    OPEN: "#3498db",
-    IN_PROGRESS: "#f39c12",
-    PENDING: "#9b59b6",
-    ESCALATED: "#e74c3c",
-    RESOLVED: "#27ae60",
-    CLOSED: "#2c3e50",
-    CANCELLED: "#95a5a6",
+    OPEN: "#3498db", IN_PROGRESS: "#f39c12", PENDING: "#9b59b6",
+    ESCALATED: "#e74c3c", RESOLVED: "#27ae60", CLOSED: "#2c3e50", CANCELLED: "#95a5a6",
   };
+  const color = newStatus ? (statusColors[newStatus] || "#3498db") : "#3498db";
 
-  const statusColor = newStatus ? statusColors[newStatus] || "#3498db" : "#3498db";
+  const statusHtml = newStatus ? `
+    <div style="background:#f8f9fa;padding:15px;border-left:4px solid ${color};margin:20px 0;border-radius:4px;">
+      <strong>Status:</strong>
+      <span style="color:${color};font-weight:bold;margin-left:8px;">${previousStatus ? `${previousStatus} → ` : ""}${newStatus}</span>
+    </div>` : "";
 
-  let statusHtml = "";
-  if (newStatus && previousStatus) {
-    statusHtml = `
-      <div style="background-color: #f8f9fa; padding: 15px; border-left: 4px solid ${statusColor}; margin: 20px 0; border-radius: 4px;">
-        <strong>Status Changed:</strong> 
-        <span style="color: ${statusColor}; font-weight: bold; margin-left: 8px;">${previousStatus} → ${newStatus}</span>
-      </div>
-    `;
-  } else if (newStatus) {
-    statusHtml = `
-      <div style="background-color: #f8f9fa; padding: 15px; border-left: 4px solid ${statusColor}; margin: 20px 0; border-radius: 4px;">
-        <strong>New Status:</strong> 
-        <span style="color: ${statusColor}; font-weight: bold; margin-left: 8px;">${newStatus}</span>
-      </div>
-    `;
-  }
+  const detailsHtml = updateDetails ? `
+    <div style="background:#fff3cd;border-left:4px solid #ffc107;padding:15px;margin:20px 0;border-radius:4px;">
+      <strong>Details:</strong>
+      <p style="margin:8px 0 0;font-style:italic;color:#856404;">${updateDetails}</p>
+    </div>` : "";
 
-  const detailsHtml = updateDetails
-    ? `
-      <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px;">
-        <strong>Details:</strong>
-        <p style="margin: 8px 0 0; font-style: italic; color: #856404;">${updateDetails}</p>
-      </div>
-    `
-    : "";
+  // Thread under existing staff emails for this case
+  const thread = await getThreadHeaders(caseId, staffEmail);
 
-  const htmlContent = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-      <h2 style="color: #2c3e50;">${updateTypeLabel}: Case #${caseNumber}</h2>
+  // Staff emails also use the canonical subject pattern
+  const subject = caseThreadSubject(caseNumber, subjectLine);
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e0e0e0;border-radius:8px;">
+      <h2 style="color:#2c3e50;">${label}: Case #${caseNumber}</h2>
       <p>Hello ${staffName},</p>
-      <p>An update has been made to support ticket <strong>"${subjectLine}"</strong> (Case #${caseNumber}).</p>
-      
+      <p>An update has been made to <strong>"${subjectLine}"</strong> (Case #${caseNumber}).</p>
       ${statusHtml}
       ${detailsHtml}
-
-      <p>You can review the full case details and take action if needed:</p>
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="${caseUrl}" style="background-color: #3498db; color: white; padding: 12px 25px; text-decoration: none; font-weight: bold; border-radius: 4px; display: inline-block;">View Case</a>
+      <div style="text-align:center;margin:30px 0;">
+        <a href="${caseUrl}" style="background:#3498db;color:white;padding:12px 25px;text-decoration:none;font-weight:bold;border-radius:4px;display:inline-block;">View Case</a>
       </div>
-
-      <p style="font-size: 12px; color: #7f8c8d; margin-top: 30px;">
-        Updated by: ${updatedBy}<br>
-        If the button above does not load, copy and paste this address into your browser: ${caseUrl}
-      </p>
-    </div>
-  `;
+      <p style="font-size:12px;color:#7f8c8d;">Updated by: ${updatedBy}</p>
+    </div>`;
 
   try {
-    // Look up the first email sent to this staff member for this case
-    // so all subsequent emails thread under it in their inbox.
-    let inReplyTo: string | undefined;
-    let references: string | undefined;
-    try {
-      const rootLog = await prisma.emailLog.findFirst({
-        where: {
-          relatedCaseId: caseId || undefined,
-          direction: "OUTBOUND",
-          messageId: { not: null },
-          recipientEmail: staffEmail,
-        },
-        orderBy: { createdAt: "asc" },
-        select: { messageId: true, references: true },
-      });
-      if (rootLog?.messageId) {
-        inReplyTo  = rootLog.messageId;
-        references = buildReferences(rootLog.references, rootLog.messageId);
-      }
-    } catch (_) {}
-
     await dispatchEmail({
       to: staffEmail,
-      subject: `[Staff Update] Case #${caseNumber} - ${updateTypeLabel}`,
-      html: htmlContent,
+      subject,
+      html,
       kind: `staff-${updateType}`,
-      inReplyTo,
-      references,
+      inReplyTo:    thread?.inReplyTo,
+      references:   thread?.references,
       relatedCaseId: caseId,
-      bodyText: `Case #${caseNumber} ${updateTypeLabel}${updateDetails ? `: ${updateDetails}` : ""}.`,
+      bodyText: `Case #${caseNumber} ${label}${updateDetails ? `: ${updateDetails}` : ""}.`,
     });
     return true;
-  } catch (error) {
-    console.error(`[Email:staff-${updateType}] Failed to send staff case update email to ${staffEmail}:`, error);
+  } catch (e) {
+    console.error(`[Email:staff-${updateType}] Failed for ${staffEmail}:`, e);
     return false;
   }
 };

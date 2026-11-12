@@ -14,6 +14,7 @@ const triggerStatusNotification = async (caseDetails: any, newStatus: string) =>
     customerEmail: caseDetails.customer.email,
     customerName: `${caseDetails.customer.firstName || ''} ${caseDetails.customer.lastName || ''}`.trim() || "Valued Customer",
     caseNumber: caseDetails.caseNumber,
+    caseId: caseDetails.id,
     subjectLine: caseDetails.subject,
     newStatus: newStatus,
   });

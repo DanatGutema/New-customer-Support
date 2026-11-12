@@ -596,6 +596,7 @@ export const createCase = async (input: any) => {
           customerEmail: completeCaseDetails.customer.email,
           customerName: customerFullName,
           caseNumber: completeCaseDetails.caseNumber,
+          caseId: completeCaseDetails.id,          // ← wire root email to case
           subjectLine: completeCaseDetails.subject,
           description: completeCaseDetails.description,
           isCreatedByStaff: isStaff,

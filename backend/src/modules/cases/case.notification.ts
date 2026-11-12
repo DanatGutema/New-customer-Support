@@ -127,14 +127,22 @@ export async function processCaseNotifications(params: NotifyAssignmentInput) {
       agentEmail: newAgent.email,
       agentName: newAgentName,
       caseNumber,
+      caseId,
     });
   }
 
   if (!isReassignment && customer?.email) {
+    // Look up the case subject so the customer email threads correctly
+    const caseData = await prisma.caseReport.findUnique({
+      where: { id: caseId },
+      select: { subject: true },
+    });
     await sendCustomerAssignmentEmail({
       customerEmail: customer.email,
       customerName: `${customer.firstName} ${customer.lastName || ""}`.trim(),
       caseNumber,
+      caseId,
+      subjectLine: caseData?.subject ?? undefined,
     });
   }
 }
